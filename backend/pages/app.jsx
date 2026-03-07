@@ -264,6 +264,7 @@ function AppContent() {
   const [geminiKey,setGeminiKey]= useState("");
   const [geminiErr,setGeminiErr]= useState("");
   const [aiApiKey, setAiApiKey] = useState("");
+  const [aiModel, setAiModel] = useState("gemini-2.5-flash");
   const [fbToken,  setFbToken]  = useState("");
   const [fbAppId,  setFbAppId]  = useState("");
   const [fbAppSecret, setFbAppSecret] = useState("");
@@ -324,7 +325,7 @@ function AppContent() {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiApiKey, prompt, system: SYSTEM_PROMPT }),
+        body: JSON.stringify({ apiKey: aiApiKey, model: aiModel, prompt, system: SYSTEM_PROMPT }),
       });
       const data = await res.json();
       if (data.error) { setAiOut("Erro: " + data.error); setAiLoad(false); return; }
@@ -337,7 +338,7 @@ function AppContent() {
       }, 10);
     } catch { setAiOut("Erro de conexão. Verifique sua API Key do Gemini na aba Sync."); }
     finally { setAiLoad(false); }
-  }, [aiApiKey]);
+  }, [aiApiKey, aiModel]);
 
   // ── Auto analyze on first load ────────────────────────────────────────────
   useEffect(()=>{
@@ -345,6 +346,29 @@ function AppContent() {
     setFat(totRev);
   // eslint-disable-next-line
   },[]);
+
+  // ── Persistência local das credenciais/config de sync ─────────────────────
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("goorbit.sync.config.v1");
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved.aiApiKey) setAiApiKey(saved.aiApiKey);
+      if (saved.aiModel) setAiModel(saved.aiModel);
+      if (saved.fbToken) setFbToken(saved.fbToken);
+      if (saved.fbAppId) setFbAppId(saved.fbAppId);
+      if (saved.fbAppSecret) setFbAppSecret(saved.fbAppSecret);
+      if (saved.longToken) setLongToken(saved.longToken);
+      if (typeof saved.syncAuto === "boolean") setSyncAuto(saved.syncAuto);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const payload = { aiApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto };
+    localStorage.setItem("goorbit.sync.config.v1", JSON.stringify(payload));
+  }, [aiApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto]);
 
   // ── Gerar Long-lived Token ────────────────────────────────────────────────
   const getLongToken = async () => {
@@ -440,7 +464,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiApiKey, prompt: briefPrompt, system: SYSTEM_PROMPT }),
+        body: JSON.stringify({ apiKey: aiApiKey, model: aiModel, prompt: briefPrompt, system: SYSTEM_PROMPT }),
       });
       const d = await res.json();
       if (d.error) throw new Error(d.error);
@@ -474,13 +498,13 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
     if(pause.length) setAutoLog(l=>[...l,`[${ts}] ⏸ ${pause.length} campanha(s) para PAUSAR`]);
     const p=`ANÁLISE AUTOMÁTICA — DADOS REAIS (7 dias)\nGasto total: R$${totSpend.toFixed(2)} | Vendas: ${totSales} | CPA médio: R$${avgCpa.toFixed(2)} | CTR: ${avgCtr.toFixed(2)}% | ROAS: ${roas.toFixed(2)}\nTop campanha: ${top?.name} (CPA R$${top?.cpa?.toFixed(2)}, ${top?.conversions} vendas)\n\nEm 5 linhas: diagnóstico · ação #1 urgente · criativo para hoje · produto para criar · projeção para R$100k.`;
     try {
-      const res = await fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({apiKey:aiApiKey,prompt:p,system:SYSTEM_PROMPT})});
+      const res = await fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({apiKey:aiApiKey,model:aiModel,prompt:p,system:SYSTEM_PROMPT})});
       const data=await res.json();
       const brief=data.text||"";
       setAutoLog(l=>[...l,`[${ts}] 🧠 ${brief.slice(0,220)}…`]);
       addLog("ok","Brief automático gerado");
     } catch { setAutoLog(l=>[...l,`[${ts}] ⚠ Erro no brief`]); }
-  },[activeCamps,totSpend,totSales,avgCpa,avgCtr,roas]);
+  },[activeCamps,totSpend,totSales,avgCpa,avgCtr,roas,aiApiKey,aiModel]);
 
   const toggleAuto=()=>{
     if(autoMode){clearInterval(autoRef.current);setAutoMode(false);setAutoLog(l=>[...l,`[${new Date().toLocaleTimeString("pt-BR")}] ⏹ Pausado`]);}
@@ -983,6 +1007,13 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 onChange={e => setAiApiKey(e.target.value)}
                 style={{width:"100%",fontFamily:"var(--mono)",fontSize:12}}
               />
+              <div style={{display:"grid",gap:5,marginTop:8}}>
+                <div className="flbl">Modelo Gemini padrão</div>
+                <select className="finp" value={aiModel} onChange={e=>setAiModel(e.target.value)} style={{fontFamily:"var(--mono)",fontSize:12}}>
+                  {["gemini-2.5-flash","gemini-2.5-flash-lite","gemini-1.5-flash","gemini-2.0-flash"].map(m=><option key={m} value={m}>{m}</option>)}
+                </select>
+                <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>Se o seu projeto tiver quota 0 para um modelo, troque aqui sem precisar mexer no código.</div>
+              </div>
               {aiApiKey && <div className="succbox" style={{marginTop:8}}>✓ Gemini configurado — IA pronta!</div>}
             </div>
 
