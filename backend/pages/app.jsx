@@ -236,6 +236,12 @@ function parseFBJson(raw) {
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
+const normalizeSavedModel = (provider, model) => {
+  if (!model) return provider === "claude" ? "claude-3-7-sonnet-latest" : "gemini-2.5-flash";
+  if (provider === "claude" && model === "claude-3-haiku-20240307") return "claude-3-5-haiku-latest";
+  return model;
+};
+
 function AppContent() {
   const [tab,      setTab]      = useState("dashboard");
   const [campaigns,setCampaigns]= useState(REAL_CAMPAIGNS);
@@ -330,7 +336,7 @@ function AppContent() {
         body: JSON.stringify({ provider: aiProvider, apiKey: aiProvider === "claude" ? claudeApiKey : aiApiKey, model: aiModel, prompt, system: SYSTEM_PROMPT }),
       });
       const data = await res.json();
-      if (data.error) { setAiOut("Erro: " + data.error); setAiLoad(false); return; }
+      if (data.error) { setAiOut(`Erro (${data.provider || aiProvider} · ${data.model || aiModel}): ${data.error}`); setAiLoad(false); return; }
       const text = data.text || "Sem resposta.";
       let i = 0;
       const iv = setInterval(() => {
@@ -356,10 +362,11 @@ function AppContent() {
       const raw = localStorage.getItem("goorbit.sync.config.v1");
       if (!raw) return;
       const saved = JSON.parse(raw);
-      if (saved.aiProvider) setAiProvider(saved.aiProvider);
+      const savedProvider = saved.aiProvider || "gemini";
+      setAiProvider(savedProvider);
       if (saved.aiApiKey) setAiApiKey(saved.aiApiKey);
       if (saved.claudeApiKey) setClaudeApiKey(saved.claudeApiKey);
-      if (saved.aiModel) setAiModel(saved.aiModel);
+      setAiModel(normalizeSavedModel(savedProvider, saved.aiModel));
       if (saved.fbToken) setFbToken(saved.fbToken);
       if (saved.fbAppId) setFbAppId(saved.fbAppId);
       if (saved.fbAppSecret) setFbAppSecret(saved.fbAppSecret);
@@ -373,6 +380,11 @@ function AppContent() {
     const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto };
     localStorage.setItem("goorbit.sync.config.v1", JSON.stringify(payload));
   }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto]);
+
+  useEffect(() => {
+    if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-3-7-sonnet-latest");
+    if (aiProvider === "gemini" && aiModel.startsWith("claude")) setAiModel("gemini-2.5-flash");
+  }, [aiProvider]);
 
   // ── Gerar Long-lived Token ────────────────────────────────────────────────
   const getLongToken = async () => {

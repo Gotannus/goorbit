@@ -15,6 +15,15 @@ const DEFAULT_CLAUDE_MODELS = [
   "claude-3-5-haiku-latest",
 ];
 
+const MODEL_ALIASES = {
+  "claude-3-haiku-20240307": "claude-3-5-haiku-latest",
+};
+
+function normalizeModelName(name = "") {
+  const cleaned = String(name || "").trim();
+  return MODEL_ALIASES[cleaned] || cleaned;
+}
+
 function parseRetrySeconds(message = "", retryAfterHeader = "") {
   const header = Number(retryAfterHeader);
   if (!Number.isNaN(header) && header > 0) return Math.ceil(header);
@@ -54,18 +63,18 @@ function normalizeModelList(requestedModel, requestedModels, defaults) {
   const explicit = [];
 
   if (typeof requestedModel === "string" && requestedModel.trim()) {
-    explicit.push(requestedModel.trim());
+    explicit.push(normalizeModelName(requestedModel));
   }
 
   if (Array.isArray(requestedModels)) {
     for (const model of requestedModels) {
       if (typeof model === "string" && model.trim()) {
-        explicit.push(model.trim());
+        explicit.push(normalizeModelName(model));
       }
     }
   }
 
-  const merged = [...explicit, ...defaults];
+  const merged = [...explicit, ...defaults.map(normalizeModelName)];
   return [...new Set(merged)];
 }
 
@@ -87,6 +96,7 @@ async function callGemini({ key, fullPrompt, modelCandidates }) {
     if (!geminiRes.ok || data?.error) {
       const err = data?.error || {};
       lastError = err.message || `Falha no modelo ${modelName}`;
+      console.warn(`[ai/chat][gemini] falha no modelo ${modelName}: ${lastError}`);
 
       if (isQuotaError(geminiRes.status, err)) {
         const retryIn = parseRetrySeconds(lastError, geminiRes.headers.get("retry-after"));
@@ -118,6 +128,7 @@ async function callGemini({ key, fullPrompt, modelCandidates }) {
       return { ok: false, status: 502, body: { error: "Gemini respondeu sem conteúdo de texto." } };
     }
 
+    console.info(`[ai/chat][gemini] sucesso com modelo ${modelName}`);
     return { ok: true, body: { text, provider: "gemini", model: modelName } };
   }
 
@@ -157,6 +168,7 @@ async function callClaude({ key, fullPrompt, system, modelCandidates }) {
       const err = data?.error || {};
       const errStatus = err?.type || err?.status || "";
       lastError = [err.message || data?.message || `Falha no modelo ${modelName}`, errStatus && `(type/status: ${errStatus})`].filter(Boolean).join(" ");
+      console.warn(`[ai/chat][claude] falha no modelo ${modelName}: ${lastError}`);
 
       if (isQuotaError(claudeRes.status, err)) {
         const retryIn = parseRetrySeconds(lastError, claudeRes.headers.get("retry-after"));
@@ -187,6 +199,7 @@ async function callClaude({ key, fullPrompt, system, modelCandidates }) {
       return { ok: false, status: 502, body: { error: "Claude respondeu sem conteúdo de texto." } };
     }
 
+    console.info(`[ai/chat][claude] sucesso com modelo ${modelName}`);
     return { ok: true, body: { text, provider: "claude", model: modelName } };
   }
 
@@ -222,6 +235,8 @@ export default async function handler(req, res) {
       .json({ error: `API Key do ${selectedProvider === "claude" ? "Claude" : "Gemini"} não informada.` });
   }
   if (!prompt?.trim()) return res.status(400).json({ error: "Prompt vazio." });
+
+  console.info(`[ai/chat] provider=${selectedProvider} model=${model || "(default)"}`);
 
   try {
     const fullPrompt = selectedProvider === "claude" ? prompt : system ? `${system}\n\n${prompt}` : prompt;
