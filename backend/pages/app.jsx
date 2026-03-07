@@ -263,6 +263,7 @@ function AppContent() {
   const [genCreat, setGenCreat] = useState([]);
   const [geminiKey,setGeminiKey]= useState("");
   const [geminiErr,setGeminiErr]= useState("");
+  const [aiApiKey, setAiApiKey] = useState("");
   const [fbToken,  setFbToken]  = useState("");
   const [syncAuto, setSyncAuto] = useState(false);
   const [syncLoad, setSyncLoad] = useState(false);
@@ -317,21 +318,29 @@ function AppContent() {
   const callAI = useCallback(async (prompt, ctx="") => {
     setAiLoad(true); setAiOut(""); setAiCtx(ctx);
     try {
-      const res  = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000, system:SYSTEM_PROMPT, messages:[{role:"user",content:prompt}] }),
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: aiApiKey,
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: prompt }],
+        }),
       });
       const data = await res.json();
-      const text = data.content?.map(b=>b.text||"").join("")||"Erro.";
-      let i=0;
-      const iv = setInterval(()=>{
-        i+=5; setAiOut(text.slice(0,i));
-        if(outRef.current) outRef.current.scrollTop=outRef.current.scrollHeight;
-        if(i>=text.length) clearInterval(iv);
-      },10);
-    } catch { setAiOut("Erro de conexão com a IA."); }
+      if (data.error) { setAiOut("Erro: " + data.error); return; }
+      const text = data.content?.map(b => b.text || "").join("") || "Erro.";
+      let i = 0;
+      const iv = setInterval(() => {
+        i += 5; setAiOut(text.slice(0, i));
+        if (outRef.current) outRef.current.scrollTop = outRef.current.scrollHeight;
+        if (i >= text.length) clearInterval(iv);
+      }, 10);
+    } catch { setAiOut("Erro de conexão com a IA. Verifique sua API Key na aba Sync."); }
     finally { setAiLoad(false); }
-  },[]);
+  }, [aiApiKey]);
 
   // ── Auto analyze on first load ────────────────────────────────────────────
   useEffect(()=>{
@@ -411,9 +420,10 @@ Varie os ângulos emocionais: exaustão, culpa, libertação, reconhecimento, pe
 Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:2000, system:SYSTEM_PROMPT, messages:[{role:"user",content:briefPrompt}] }),
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: aiApiKey, model: "claude-sonnet-4-20250514", max_tokens: 2000, system: SYSTEM_PROMPT, messages: [{ role: "user", content: briefPrompt }] }),
       });
       const d = await res.json();
       const raw = d.content?.map(b=>b.text||"").join("")||"[]";
@@ -446,7 +456,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
     if(pause.length) setAutoLog(l=>[...l,`[${ts}] ⏸ ${pause.length} campanha(s) para PAUSAR`]);
     const p=`ANÁLISE AUTOMÁTICA — DADOS REAIS (7 dias)\nGasto total: R$${totSpend.toFixed(2)} | Vendas: ${totSales} | CPA médio: R$${avgCpa.toFixed(2)} | CTR: ${avgCtr.toFixed(2)}% | ROAS: ${roas.toFixed(2)}\nTop campanha: ${top?.name} (CPA R$${top?.cpa?.toFixed(2)}, ${top?.conversions} vendas)\n\nEm 5 linhas: diagnóstico · ação #1 urgente · criativo para hoje · produto para criar · projeção para R$100k.`;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:500,system:SYSTEM_PROMPT,messages:[{role:"user",content:p}]})});
+      const res = await fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({apiKey:aiApiKey,model:"claude-sonnet-4-20250514",max_tokens:500,system:SYSTEM_PROMPT,messages:[{role:"user",content:p}]})});
       const data=await res.json();
       const brief=data.content?.map(b=>b.text||"").join("")||"";
       setAutoLog(l=>[...l,`[${ts}] 🧠 ${brief.slice(0,220)}…`]);
@@ -941,6 +951,23 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {/* ═══ SYNC AUTOMÁTICO ═══ */}
         {tab==="sync"&&(
           <div className="main">
+            {/* API Key IA */}
+            <div className="card" style={{borderColor:"rgba(139,92,246,.3)",background:"rgba(139,92,246,.025)"}}>
+              <div className="ctitle" style={{color:"rgba(167,139,250,.9)"}}>🤖 API Key — Claude (Anthropic)</div>
+              <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",marginBottom:10,lineHeight:1.7}}>
+                Gere em <span style={{color:"var(--gold)"}}>console.anthropic.com/settings/keys</span>. Necessária para IA Conselheira, Piloto Auto e geração de criativos.
+              </div>
+              <input
+                className="finp"
+                type="password"
+                placeholder="sk-ant-api03-..."
+                value={aiApiKey}
+                onChange={e => setAiApiKey(e.target.value)}
+                style={{width:"100%",fontFamily:"var(--mono)",fontSize:12}}
+              />
+              {aiApiKey && <div className="succbox" style={{marginTop:8}}>✓ API Key configurada — IA pronta para usar</div>}
+            </div>
+
             {/* Token input */}
             <div className="card gb">
               <div className="ctitle">🔑 Token de Acesso Meta</div>
