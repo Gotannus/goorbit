@@ -1,6 +1,31 @@
 // pages/api/ai/chat.js
 // Proxy para Google Gemini API
 
+function parseRetrySeconds(message = "", retryAfterHeader = "") {
+  const header = Number(retryAfterHeader);
+  if (!Number.isNaN(header) && header > 0) return Math.ceil(header);
+
+  const match = String(message).match(/retry in\s+([\d.]+)s/i);
+  if (!match) return null;
+  const sec = Number(match[1]);
+  return Number.isNaN(sec) ? null : Math.ceil(sec);
+}
+
+function isQuotaError(statusCode, err = {}) {
+  const msg = `${err.message || ""} ${err.status || ""}`.toLowerCase();
+  return statusCode === 429 || msg.includes("quota exceeded") || msg.includes("resource_exhausted");
+}
+
+function quotaMessage(retrySeconds) {
+  const waitText = retrySeconds ? ` Tente novamente em ~${retrySeconds}s.` : "";
+  return (
+    "Sua chave do Gemini está sem cota disponível no momento (free tier). " +
+    "No Google AI Studio, use uma API key de um projeto com faturamento habilitado " +
+    "ou gere uma nova chave com quota ativa." +
+    waitText
+  );
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -16,7 +41,9 @@ export default async function handler(req, res) {
   if (!prompt?.trim()) return res.status(400).json({ error: "Prompt vazio." });
 
   try {
-    const fullPrompt = system ? `${system}\n\n${prompt}` : prompt;
+    const fullPrompt = system ? `${system}
+
+${prompt}` : prompt;
     const models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
 
     let lastError = "";
@@ -33,7 +60,19 @@ export default async function handler(req, res) {
 
       const data = await geminiRes.json();
       if (!geminiRes.ok || data?.error) {
-        lastError = data?.error?.message || `Falha no modelo ${model}`;
+        const err = data?.error || {};
+        lastError = err.message || `Falha no modelo ${model}`;
+
+        if (isQuotaError(geminiRes.status, err)) {
+          const retryIn = parseRetrySeconds(lastError, geminiRes.headers.get("retry-after"));
+          return res.status(429).json({
+            error: quotaMessage(retryIn),
+            reason: "quota_exceeded",
+            retryAfterSeconds: retryIn,
+            raw: lastError,
+          });
+        }
+
         continue;
       }
 
