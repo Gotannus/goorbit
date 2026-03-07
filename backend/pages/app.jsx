@@ -141,6 +141,7 @@ body { background: #07070f; }
 `;
 
 // ── Constants ──────────────────────────────────────────────────────────────
+const META_GOAL = 100000;
 const TICKET = 55;       // ticket do produto principal
 const CPA_REAL = 15.39;  // CPA médio REAL (sem orderbump) confirmado pelo gestor
 // Obs: o FB reporta CPA calculado sobre spend/conversões pixel,
