@@ -155,7 +155,7 @@ const CPA_REAL = 15.39;  // CPA médio REAL (sem orderbump) confirmado pelo gest
 // mas o CPA real da operação (sem orderbump) é R$15,39.
 // Motor de decisão usa limiares baseados neste CPA real.
 
-const SYSTEM_PROMPT = `Você é o Cérebro Operacional de um negócio de produtos digitais.
+const SYSTEM_PROMPT = `Você é o Go Orbit, sistema operacional de tráfego pago da Gotannus.
 PRODUTO: "Mulher Forte" — ticket principal R$55.
 CPA REAL MÉDIO (sem orderbump): R$15,39. Use este número como referência, não o calculado pelo FB.
 TRÁFEGO: 100% Facebook Ads.
@@ -354,7 +354,7 @@ export default function App() {
     addLog("info", "Iniciando sincronização com Meta API…");
 
     // ⚠️ Troque pela URL do seu deploy na Vercel após subir o backend
-    const API_BASE = "https://cerebro-backend.vercel.app";
+    const API_BASE = "https://goorbit.vercel.app";
 
     try {
       // 1. Buscar insights das campanhas (últimos 7 dias)
@@ -477,10 +477,10 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {/* HEADER */}
         <div className="hdr">
           <div className="logo">
-            <div className="lorb">🧠</div>
+            <div className="lorb">🚀</div>
             <div>
-              <div className="lname">Cérebro Operacional</div>
-              <div className="ltag">Mulher Forte · R$100k · 30 dias</div>
+              <div className="lname">Go Orbit</div>
+              <div className="ltag">by Gotannus · Low Ticket · Meta Ads</div>
             </div>
           </div>
           <div className="hright">
@@ -526,7 +526,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             <div className="metawrap">
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:12}}>
                 <div>
-                  <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--gold)",opacity:.7,textTransform:"uppercase",letterSpacing:2,marginBottom:5}}>Meta acumulada (ajuste manual)</div>
+              <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--gold)",opacity:.7,textTransform:"uppercase",letterSpacing:2,marginBottom:5}}>Meta acumulada (ajuste manual)</div>
                   <span className="metafig">{fBRL(fat)}</span>
                   <span className="metaof">/ R$100.000</span>
                 </div>
