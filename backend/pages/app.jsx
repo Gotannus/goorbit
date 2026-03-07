@@ -443,7 +443,8 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         body: JSON.stringify({ apiKey: aiApiKey, prompt: briefPrompt, system: SYSTEM_PROMPT }),
       });
       const d = await res.json();
-      const raw = d.content?.map(b=>b.text||"").join("")||"[]";
+      if (d.error) throw new Error(d.error);
+      const raw = d.text || "[]";
       let items = [];
       try {
         const clean = raw.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m => m.replace(/```json\n?|```\n?/g,"")).trim();
