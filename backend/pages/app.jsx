@@ -238,7 +238,7 @@ function parseFBJson(raw) {
 // ── Main App ───────────────────────────────────────────────────────────────
 const normalizeSavedModel = (provider, model) => {
   if (!model) return provider === "claude" ? "claude-3-7-sonnet-latest" : "gemini-2.5-flash";
-  if (provider === "claude" && model === "claude-3-haiku-20240307") return "claude-3-5-haiku-latest";
+  if (provider === "claude" && ["claude-3-5-sonnet-latest","claude-3-7-sonnet-latest"].includes(model)) return "claude-sonnet-4-6";
   return model;
 };
 
@@ -382,7 +382,7 @@ function AppContent() {
   }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto]);
 
   useEffect(() => {
-    if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-3-7-sonnet-latest");
+    if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-haiku-4-5-20251001");
     if (aiProvider === "gemini" && aiModel.startsWith("claude")) setAiModel("gemini-2.5-flash");
   }, [aiProvider]);
 
@@ -1055,9 +1055,9 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                     style={{width:"100%",fontFamily:"var(--mono)",fontSize:12}}
                   />
                   <div style={{display:"grid",gap:5,marginTop:8}}>
-                    <div className="flbl">Modelo Claude padrão</div>
+                    <div className="flbl">Modelo Claude padrão (conta atual)</div>
                     <select className="finp" value={aiModel} onChange={e=>setAiModel(e.target.value)} style={{fontFamily:"var(--mono)",fontSize:12}}>
-                      {["claude-3-7-sonnet-latest","claude-3-5-sonnet-latest","claude-3-5-haiku-latest"].map(m=><option key={m} value={m}>{m}</option>)}
+                      {["claude-haiku-4-5-20251001","claude-sonnet-4-6","claude-opus-4-6"].map(m=><option key={m} value={m}>{m}</option>)}
                     </select>
                   </div>
                 </>
