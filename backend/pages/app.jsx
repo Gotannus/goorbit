@@ -373,6 +373,8 @@ function AppContent() {
   const [syncOk,   setSyncOk]   = useState("");
   const [adCreatives, setAdCreatives] = useState([]);
   const [creativesLoad, setCreativesLoad] = useState(false);
+  const [creativeModelLoadId, setCreativeModelLoadId] = useState("");
+  const [creativeModelMap, setCreativeModelMap] = useState({});
   const [periodPreset, setPeriodPreset] = useState("last_7d");
   const [campaignDaily, setCampaignDaily] = useState({});
   const [showPausedCampaigns, setShowPausedCampaigns] = useState(false);
@@ -596,6 +598,75 @@ function AppContent() {
       setSyncErr("Erro ao buscar criativos: " + e.message);
     } finally { setCreativesLoad(false); }
   };
+
+  const generateCreativeModel = async (creative) => {
+    const creativeId = creative?.adId || creative?.adName || `creative_${Date.now()}`;
+    const apiKey = aiProvider === "claude" ? claudeApiKey : aiApiKey;
+    if (!apiKey?.trim()) {
+      setSyncErr(`Configure a API Key de ${aiProvider === "claude" ? "Claude" : "Gemini"} na aba Sync.`);
+      setTab("sync");
+      return;
+    }
+
+    setCreativeModelLoadId(creativeId);
+    setSyncErr("");
+
+    try {
+      const prompt = `Você é diretora criativa de Facebook Ads de resposta direta.
+
+Analise o criativo abaixo e gere um MODELO para reproduzir quase 1:1 o que está funcionando, sem descaracterizar o original.
+Depois gere apenas 1 variação de teste (mudança mínima de 1 elemento).
+
+DADOS DO CRIATIVO VENCEDOR:
+- Nome do anúncio: ${creative?.adName || "—"}
+- Status: ${creative?.status || "—"}
+- Título: ${creative?.title || "—"}
+- Texto principal: ${creative?.body || "—"}
+- URL da imagem: ${creative?.imageUrl || "—"}
+- CPA: R$${fNum(creative?.cpa || 999)}
+- CTR: ${fNum(creative?.ctr || 0)}%
+- Conversões: ${Math.round(creative?.conversions || 0)}
+
+Notas da gestora (quando houver):
+${creativeRefNotes?.trim() || "Sem notas adicionais."}
+
+INSTRUÇÕES:
+1) Descreva a composição visual completa do criativo (personagem, expressão, objeto principal como livro/capa, cenário, iluminação, enquadramento, tipografia e hook sobreposto).
+2) Crie um prompt de IMAGEM em inglês extremamente fiel ao criativo vencedor (quase cópia).
+3) Crie uma segunda versão com 1 variação para teste A/B mantendo 90% igual.
+4) Diga qual elemento foi alterado na variação e a hipótese de performance.
+
+FORMATO DE SAÍDA (sem JSON):
+[MODELO_FIEL]
+- Diagnóstico do criativo vencedor:
+- Prompt imagem (EN):
+- Hook em português (texto sobreposto):
+
+[VARIACAO_TESTE]
+- Elemento alterado (apenas 1):
+- Prompt imagem (EN):
+- Hook em português:
+- Hipótese do teste:`;
+
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: aiProvider, apiKey, model: aiModel, prompt, system: SYSTEM_PROMPT }),
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+
+      const text = d.text || "Sem resposta da IA.";
+      setCreativeModelMap((prev) => ({ ...prev, [creativeId]: text }));
+      addLog("ok", `Modelo gerado para criativo: ${creative?.adName || creativeId}`);
+    } catch (e) {
+      setSyncErr("Erro ao gerar modelo do criativo: " + e.message);
+      addLog("warn", "Erro ao gerar modelo de criativo: " + e.message);
+    } finally {
+      setCreativeModelLoadId("");
+    }
+  };
+
 
   // ── Generate image prompts + open Gemini ─────────────────────────────────
   // A Gemini API (como a do Facebook) bloqueia chamadas diretas do browser via CORS.
@@ -1007,20 +1078,39 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 </div>
                 {topCreatives.length>0 ? (
                   <div style={{display:"grid",gap:10}}>
-                    {topCreatives.map((cr, idx) => (
-                      <div key={cr.adId} style={{display:"flex",gap:12,alignItems:"flex-start",background:"rgba(255,255,255,.022)",border:"1px solid var(--bd)",borderRadius:9,padding:"11px 13px"}}>
-                        <img src={cr.imageUrl} alt={cr.adName} style={{width:72,height:72,objectFit:"cover",borderRadius:8,flexShrink:0,border:"1px solid var(--bd)"}}/>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:12,fontWeight:700,marginBottom:2}}>#{idx+1} · {cr.adName}</div>
-                          {cr.title&&cr.title!=="—"&&<div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--gold)",marginBottom:2}}>{cr.title}</div>}
-                          {cr.body&&cr.body!=="—"&&<div style={{fontSize:11,color:"var(--txd)",lineHeight:1.45}}>{cr.body.slice(0,160)}{cr.body.length>160?"…":""}</div>}
-                          <div style={{display:"flex",gap:10,marginTop:6,fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>
-                            <span>CPA R${fNum(cr.cpa)}</span><span>CTR {fNum(cr.ctr)}%</span><span>{Math.round(cr.conversions||0)} conv</span>
+                    {topCreatives.map((cr, idx) => {
+                      const creativeId = cr.adId || cr.adName || `creative_${idx}`;
+                      const generatedModel = creativeModelMap[creativeId];
+                      const loadingModel = creativeModelLoadId === creativeId;
+                      return (
+                      <div key={creativeId} style={{display:"flex",flexDirection:"column",gap:8,background:"rgba(255,255,255,.022)",border:"1px solid var(--bd)",borderRadius:9,padding:"11px 13px"}}>
+                        <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+                          <img src={cr.imageUrl} alt={cr.adName} style={{width:72,height:72,objectFit:"cover",borderRadius:8,flexShrink:0,border:"1px solid var(--bd)"}}/>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:700,marginBottom:2}}>#{idx+1} · {cr.adName}</div>
+                            {cr.title&&cr.title!=="—"&&<div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--gold)",marginBottom:2}}>{cr.title}</div>}
+                            {cr.body&&cr.body!=="—"&&<div style={{fontSize:11,color:"var(--txd)",lineHeight:1.45}}>{cr.body.slice(0,160)}{cr.body.length>160?"…":""}</div>}
+                            <div style={{display:"flex",gap:10,marginTop:6,fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>
+                              <span>CPA R${fNum(cr.cpa)}</span><span>CTR {fNum(cr.ctr)}%</span><span>{Math.round(cr.conversions||0)} conv</span>
+                            </div>
                           </div>
+                          <div className={`badge ${cr.status==="ACTIVE"?"sc":"pa"}`}>{cr.status==="ACTIVE"?"ATIVO":"PAUSADO"}</div>
                         </div>
-                        <div className={`badge ${cr.status==="ACTIVE"?"sc":"pa"}`}>{cr.status==="ACTIVE"?"ATIVO":"PAUSADO"}</div>
+                        <div className="brow" style={{gap:8}}>
+                          <button className="btnol" onClick={() => generateCreativeModel(cr)} disabled={loadingModel || aiLoad}>
+                            {loadingModel ? "Gerando modelo…" : "🧠 Gerar Modelo"}
+                          </button>
+                          {generatedModel && (
+                            <button className="btng" onClick={() => navigator.clipboard?.writeText(generatedModel).then(() => {})}>
+                              📋 Copiar modelo
+                            </button>
+                          )}
+                        </div>
+                        {generatedModel && (
+                          <div className="aiout" style={{marginTop:0,whiteSpace:"pre-wrap"}}>{generatedModel}</div>
+                        )}
                       </div>
-                    ))}
+                    )})}
                   </div>
                 ) : (
                   <div className="tipbox">Nenhum criativo com imagem carregado ainda. Clique em <b>Puxar melhores criativos</b> ou sincronize na aba Sync Automático.</div>
