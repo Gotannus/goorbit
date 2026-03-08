@@ -277,17 +277,15 @@ const normalizeSavedModel = (provider, model) => {
 
 function AppContent() {
   const [tab,      setTab]      = useState("dashboard");
-  const [campaigns,setCampaigns]= useState(REAL_CAMPAIGNS);
-  const [fbConn,   setFbConn]   = useState(true);  // real data is pre-loaded
-  const [usingReal,setUsingReal]= useState(true);
+  const [campaigns,setCampaigns]= useState([]);
+  const [fbConn,   setFbConn]   = useState(false);
+  const [usingReal,setUsingReal]= useState(false);
   const [jsonInput,setJsonInput]= useState("");
   const [importErr,setImportErr]= useState("");
   const [importOk, setImportOk] = useState("");
   const [syncLog,  setSyncLog]  = useState([
-    { ts:"agora", type:"ok",   msg:"✓ Dados reais carregados — conta act_521962199812037" },
-    { ts:"agora", type:"ok",   msg:`✓ ${REAL_CAMPAIGNS.length} campanhas ativas (28/02–06/03/2026)` },
-    { ts:"agora", type:"ok",   msg:`✓ CPA real (sem orderbump): R$${CPA_REAL.toFixed(2)} · Meta: ≤ R$18` },
-    { ts:"agora", type:"info", msg:"✓ Motor de decisão calibrado para CPA real" },
+    { ts:"agora", type:"info", msg:"Aguardando sincronização com Meta API para carregar dados reais." },
+    { ts:"agora", type:"info", msg:`Meta operacional: CPA real de referência R$${CPA_REAL.toFixed(2)}.` },
   ]);
   const [day,      setDay]      = useState(7);
   const [fat,      setFat]      = useState(0);
@@ -335,6 +333,10 @@ function AppContent() {
   const totalRevReal = totRev;  // revenue from FB data this week
   const salesPerDay  = totSales / 7;
   const spendPerDay  = totSpend / 7;
+  const topCreatives = [...adCreatives]
+    .filter((c) => c.imageUrl)
+    .sort((a, b) => (a.cpa ?? 999) - (b.cpa ?? 999))
+    .slice(0, 5);
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
@@ -383,10 +385,8 @@ function AppContent() {
 
   // ── Auto analyze on first load ────────────────────────────────────────────
   useEffect(()=>{
-    // Calculate real faturamento from FB data
     setFat(totRev);
-  // eslint-disable-next-line
-  },[]);
+  },[totRev]);
 
   // ── Persistência local das credenciais/config de sync ─────────────────────
   useEffect(() => {
@@ -418,6 +418,13 @@ function AppContent() {
     if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-haiku-4-5-20251001");
     if (aiProvider === "gemini" && aiModel.startsWith("claude")) setAiModel("gemini-2.5-flash");
   }, [aiProvider]);
+
+  useEffect(() => {
+    if (!fbToken?.trim()) return;
+    if (usingReal) return;
+    syncMetaAPI();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fbToken, usingReal]);
 
   // ── Gerar Long-lived Token ────────────────────────────────────────────────
   const getLongToken = async () => {
@@ -463,8 +470,10 @@ function AppContent() {
       const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
       const adsData = await adsRes.json();
       if (adsData.error) throw new Error("Criativos: " + adsData.error);
-      setAdCreatives(adsData.data || []);
-      addLog("ok", `✓ ${(adsData.data||[]).length} criativos carregados`);
+      const creatives = adsData.data || [];
+      setAdCreatives(creatives);
+      const withImage = creatives.filter((c) => c.imageUrl).length;
+      addLog("ok", `✓ ${creatives.length} criativos carregados (${withImage} com imagem)`);
       setSyncOk(`✓ Sincronizado! ${parsed.length} campanhas + ${(adsData.data||[]).length} criativos — ${new Date().toLocaleTimeString("pt-BR")}`);
     } catch(e) {
       setSyncErr("Erro: " + e.message);
@@ -822,6 +831,29 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             </div>
 
             <div className="c2">
+              {/* TOP 5 criativos reais (Meta) */}
+              {topCreatives.length > 0 && (
+                <div className="card gb" style={{marginBottom:12}}>
+                  <div className="ctitle">🏆 Top 5 Criativos (7 dias · menor CPA)</div>
+                  <div style={{display:"grid",gap:10}}>
+                    {topCreatives.map((cr, idx) => (
+                      <div key={cr.adId} style={{display:"flex",gap:12,alignItems:"flex-start",background:"rgba(255,255,255,.022)",border:"1px solid var(--bd)",borderRadius:9,padding:"11px 13px"}}>
+                        <img src={cr.imageUrl} alt={cr.adName} style={{width:72,height:72,objectFit:"cover",borderRadius:8,flexShrink:0,border:"1px solid var(--bd)"}}/>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:12,fontWeight:700,marginBottom:2}}>#{idx+1} · {cr.adName}</div>
+                          {cr.title&&cr.title!=="—"&&<div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--gold)",marginBottom:2}}>{cr.title}</div>}
+                          {cr.body&&cr.body!=="—"&&<div style={{fontSize:11,color:"var(--txd)",lineHeight:1.45}}>{cr.body.slice(0,160)}{cr.body.length>160?"…":""}</div>}
+                          <div style={{display:"flex",gap:10,marginTop:6,fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>
+                            <span>CPA R${fNum(cr.cpa)}</span><span>CTR {fNum(cr.ctr)}%</span><span>{Math.round(cr.conversions||0)} conv</span>
+                          </div>
+                        </div>
+                        <div className={`badge ${cr.status==="ACTIVE"?"sc":"pa"}`}>{cr.status==="ACTIVE"?"ATIVO":"PAUSADO"}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* LEFT: geração */}
               <div className="card">
                 <div className="ctitle">🖼 Gerar Imagens Estáticas para FB Ads</div>
@@ -1147,7 +1179,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             {/* O que o sync busca */}
             <div className="c3">
               {[
-                {icon:"📣",title:"Campanhas + Métricas",desc:"Busca spend, impressões, cliques, CTR e conversões dos últimos 7 dias. Atualiza o Dashboard e Campanhas automaticamente.",done:campaigns.length>0&&usingReal},
+                {icon:"📣",title:"Campanhas + Métricas",desc:"Busca spend, impressões, cliques, CTR e conversões dos últimos 7 dias. Atualiza o Dashboard e Campanhas automaticamente.",done:usingReal&&campaigns.length>0},
                 {icon:"🎨",title:"Criativos dos Anúncios",desc:"Carrega o título, texto, imagem e status de cada anúncio ativo ou pausado. Você vê exatamente qual criativo está rodando.",done:adCreatives.length>0},
                 {icon:"🧠",title:"Análise com IA",desc:"Após sync, peça uma análise instantânea: qual criativo pausar, qual escalar e o que testar amanhã com dados reais.",done:false},
               ].map(m=>(
@@ -1224,7 +1256,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             <div className="card gnb">
               <div className="ctitle">✅ Dados Atuais</div>
               <div style={{display:"grid",gap:8}}>
-                <div className="succbox">✓ {REAL_CAMPAIGNS.length} campanhas carregadas — conta act_521962199812037 — período 28/02–06/03/2026</div>
+                <div className="succbox">✓ Modo de dados reais ativo após sincronização com a Meta API.</div>
                 <div className="succbox">✓ Ticket configurado: R$55 | Total vendas: {totSales} | Gasto total: R${totSpend.toFixed(2)}</div>
               </div>
             </div>
