@@ -200,6 +200,32 @@ const fNum  = v => Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,max
 const cSt   = cpa => cpa <= 18 ? "sc" : cpa <= 25 ? "ho" : "pa";
 const stLbl = { sc:"ESCALAR", ho:"MANTER", pa:"PAUSAR" };
 
+const MEMORY_TTL_DAYS = 45;
+
+const formatMemoryForPrompt = (memory) => {
+  if (!memory?.insights) return "Memória da conta indisponível.";
+  const { insights } = memory;
+  const winners = (insights.creativeWinners || [])
+    .slice(0, 5)
+    .map((item) => `${item.creative}: ${item.wins} vitórias (CPA médio R$${fNum(item.avgCpa)})`)
+    .join(" | ") || "Sem padrão vencedor consolidado.";
+  const cpaRanges = (insights.cpaRangesByCampaignType || [])
+    .slice(0, 4)
+    .map((item) => `${item.type}: R$${fNum(item.minCpa)}–R$${fNum(item.maxCpa)} (média R$${fNum(item.avgCpa)})`)
+    .join(" | ") || "Sem faixas de CPA por tipo.";
+  const triggers = (insights.triggers || [])
+    .slice(0, 6)
+    .map((item) => `${item.action.toUpperCase()} quando ${item.condition} (${item.hits}x)`)
+    .join(" | ") || "Sem gatilhos recorrentes.";
+  return [
+    `versão ${memory.version} · atualizado em ${new Date(memory.updatedAt).toLocaleString("pt-BR")}`,
+    `Tempo médio para estabilizar CPA: ${insights.avgDaysToStabilizeCpa || "n/d"} dias`,
+    `Criativos vencedores: ${winners}`,
+    `Faixas de CPA por tipo: ${cpaRanges}`,
+    `Gatilhos que funcionaram: ${triggers}`,
+  ].join("\n");
+};
+
 // ── Parse FB JSON (manual import) ─────────────────────────────────────────
 function parseFBJson(raw) {
   const rows = Array.isArray(raw) ? raw : (raw?.data ?? []);
@@ -268,6 +294,8 @@ function AppContent() {
   const [fbAppId,  setFbAppId]  = useState("");
   const [fbAppSecret, setFbAppSecret] = useState("");
   const [longToken, setLongToken] = useState("");
+  const [accountMemory, setAccountMemory] = useState(null);
+  const [memoryInsights, setMemoryInsights] = useState(null);
   const [syncAuto, setSyncAuto] = useState(false);
   const [syncLoad, setSyncLoad] = useState(false);
   const [syncErr,  setSyncErr]  = useState("");
@@ -276,6 +304,133 @@ function AppContent() {
   const [creativesLoad, setCreativesLoad] = useState(false);
   const outRef  = useRef(null);
   const autoRef = useRef(null);
+
+  const buildPatternMemory = useCallback((rows) => {
+    const now = new Date().toISOString();
+    const sorted = [...rows].sort((a, b) => a.cpa - b.cpa);
+    const winners = sorted
+      .filter((c) => c.conversions > 0)
+      .slice(0, 5)
+      .map((c) => ({
+        creative: (c.name.match(/CRIATIVO\s*\d+/i)?.[0] || c.name.split("—")[1] || c.name).trim(),
+        campaign: c.name,
+        wins: 1,
+        avgCpa: Number(c.cpa.toFixed(2)),
+        ctr: Number(c.ctr.toFixed(2)),
+        updatedAt: now,
+      }));
+
+    const byType = rows.reduce((acc, c) => {
+      const key = c.name.includes("CBO") ? "CBO" : c.name.includes("Conversão") ? "Conversão" : "Teste";
+      acc[key] = acc[key] || [];
+      acc[key].push(c.cpa);
+      return acc;
+    }, {});
+
+    const cpaRangesByCampaignType = Object.entries(byType).map(([type, cpas]) => ({
+      type,
+      minCpa: Number(Math.min(...cpas).toFixed(2)),
+      maxCpa: Number(Math.max(...cpas).toFixed(2)),
+      avgCpa: Number((cpas.reduce((sum, value) => sum + value, 0) / cpas.length).toFixed(2)),
+      updatedAt: now,
+    }));
+
+    const triggers = [
+      {
+        action: "scale",
+        condition: "CPA ≤ R$18 e CTR ≥ 2%",
+        hits: rows.filter((c) => c.cpa <= 18 && c.ctr >= 2).length,
+        successRate: 1,
+        updatedAt: now,
+      },
+      {
+        action: "pause",
+        condition: "CPA > R$25",
+        hits: rows.filter((c) => c.cpa > 25).length,
+        successRate: 1,
+        updatedAt: now,
+      },
+    ].filter((item) => item.hits > 0);
+
+    const stableRows = rows.filter((c) => c.conversions >= 8);
+    const avgDaysToStabilizeCpa = stableRows.length
+      ? Number((stableRows.reduce((sum, c) => sum + Math.max(1, Math.ceil(c.spend / 120)), 0) / stableRows.length).toFixed(1))
+      : null;
+
+    return { winners, cpaRangesByCampaignType, triggers, avgDaysToStabilizeCpa };
+  }, []);
+
+  const mergeMemoryWithVersioning = useCallback((prev, nextInsights) => {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const ttlMs = MEMORY_TTL_DAYS * 24 * 60 * 60 * 1000;
+    const isFresh = (updatedAt) => now.getTime() - new Date(updatedAt || nowIso).getTime() <= ttlMs;
+
+    const prevInsights = prev?.insights || {};
+    const mergeByKey = (oldItems, newItems, key, enrich) => {
+      const map = new Map();
+      [...(oldItems || []), ...(newItems || [])]
+        .filter((item) => isFresh(item.updatedAt))
+        .forEach((item) => {
+          const id = item[key];
+          if (!id) return;
+          const old = map.get(id);
+          map.set(id, old ? enrich(old, item) : item);
+        });
+      return [...map.values()];
+    };
+
+    const winners = mergeByKey(
+      prevInsights.creativeWinners,
+      nextInsights.winners,
+      "creative",
+      (old, fresh) => ({
+        ...fresh,
+        wins: (old.wins || 0) + (fresh.wins || 0),
+        avgCpa: Number((((old.avgCpa || fresh.avgCpa) + fresh.avgCpa) / 2).toFixed(2)),
+        updatedAt: nowIso,
+      })
+    );
+
+    const cpaRangesByCampaignType = mergeByKey(
+      prevInsights.cpaRangesByCampaignType,
+      nextInsights.cpaRangesByCampaignType,
+      "type",
+      (old, fresh) => ({
+        ...fresh,
+        minCpa: Number(Math.min(old.minCpa, fresh.minCpa).toFixed(2)),
+        maxCpa: Number(Math.max(old.maxCpa, fresh.maxCpa).toFixed(2)),
+        avgCpa: Number((((old.avgCpa || fresh.avgCpa) + fresh.avgCpa) / 2).toFixed(2)),
+        updatedAt: nowIso,
+      })
+    );
+
+    const triggers = mergeByKey(
+      prevInsights.triggers,
+      nextInsights.triggers,
+      "condition",
+      (old, fresh) => ({
+        ...fresh,
+        hits: (old.hits || 0) + (fresh.hits || 0),
+        successRate: Number((((old.successRate || 1) + (fresh.successRate || 1)) / 2).toFixed(2)),
+        updatedAt: nowIso,
+      })
+    );
+
+    const syncCount = (prev?.syncCount || 0) + 1;
+    return {
+      version: `${now.getUTCFullYear()}.${String(now.getUTCMonth() + 1).padStart(2, "0")}.${syncCount}`,
+      updatedAt: nowIso,
+      expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+      syncCount,
+      insights: {
+        creativeWinners: winners,
+        avgDaysToStabilizeCpa: nextInsights.avgDaysToStabilizeCpa,
+        cpaRangesByCampaignType,
+        triggers,
+      },
+    };
+  }, []);
 
   // ── Derived ──────────────────────────────────────────────────────────────
   const activeCamps  = campaigns.filter(c => c.spend > 0);
@@ -293,11 +448,29 @@ function AppContent() {
   const totalRevReal = totRev;  // revenue from FB data this week
   const salesPerDay  = totSales / 7;
   const spendPerDay  = totSpend / 7;
+  const memoryPromptBlock = formatMemoryForPrompt(accountMemory);
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
     setSyncLog(l => [...l.slice(-29), {ts,type,msg}]);
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("goorbit.accountMemory.v1");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed.expiresAt && new Date(parsed.expiresAt).getTime() < Date.now()) {
+        window.localStorage.removeItem("goorbit.accountMemory.v1");
+        return;
+      }
+      setAccountMemory(parsed);
+      setMemoryInsights(parsed.insights);
+    } catch {
+      window.localStorage.removeItem("goorbit.accountMemory.v1");
+    }
+  }, []);
 
   // ── Manual JSON import ────────────────────────────────────────────────────
   const importJSON = () => {
@@ -320,11 +493,15 @@ function AppContent() {
   // ── AI ────────────────────────────────────────────────────────────────────
   const callAI = useCallback(async (prompt, ctx="") => {
     setAiLoad(true); setAiOut(""); setAiCtx(ctx);
+    const promptWithMemory = `${prompt}
+
+MEMÓRIA DA CONTA (padrões recorrentes):
+${memoryPromptBlock}`;
     try {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiApiKey, prompt, system: SYSTEM_PROMPT }),
+        body: JSON.stringify({ apiKey: aiApiKey, prompt: promptWithMemory, system: SYSTEM_PROMPT }),
       });
       const data = await res.json();
       if (data.error) { setAiOut("Erro: " + data.error); setAiLoad(false); return; }
@@ -337,7 +514,7 @@ function AppContent() {
       }, 10);
     } catch { setAiOut("Erro de conexão. Verifique sua API Key do Gemini na aba Sync."); }
     finally { setAiLoad(false); }
-  }, [aiApiKey]);
+  }, [aiApiKey, memoryPromptBlock]);
 
   // ── Auto analyze on first load ────────────────────────────────────────────
   useEffect(()=>{
@@ -385,6 +562,15 @@ function AppContent() {
       setFat(newTotRev);
       addLog("ok", `✓ ${parsed.length} campanhas sincronizadas`);
 
+      const nextInsights = buildPatternMemory(parsed);
+      const mergedMemory = mergeMemoryWithVersioning(accountMemory, nextInsights);
+      setAccountMemory(mergedMemory);
+      setMemoryInsights(mergedMemory.insights);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("goorbit.accountMemory.v1", JSON.stringify(mergedMemory));
+      }
+      addLog("ok", `✓ Memória da conta atualizada (v${mergedMemory.version})`);
+
       // 2. Buscar criativos dos anúncios ativos
       setCreativesLoad(true);
       const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
@@ -412,6 +598,9 @@ function AppContent() {
 
     const top3 = [...activeCamps].filter(c=>c.conversions>0).sort((a,b)=>a.cpa-b.cpa).slice(0,3);
     const briefPrompt = `Você é especialista em criativos de imagem estática para Facebook Ads.
+
+MEMÓRIA DA CONTA (padrões recorrentes):
+${memoryPromptBlock}
 
 CONTEXTO:
 - Produto: "Mulher Forte" — guia digital R$55
@@ -471,7 +660,14 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
     const scale= activeCamps.filter(c=>cSt(c.cpa)==="sc");
     if(scale.length) setAutoLog(l=>[...l,`[${ts}] ✅ ${scale.length} campanha(s) para ESCALAR`]);
     if(pause.length) setAutoLog(l=>[...l,`[${ts}] ⏸ ${pause.length} campanha(s) para PAUSAR`]);
-    const p=`ANÁLISE AUTOMÁTICA — DADOS REAIS (7 dias)\nGasto total: R$${totSpend.toFixed(2)} | Vendas: ${totSales} | CPA médio: R$${avgCpa.toFixed(2)} | CTR: ${avgCtr.toFixed(2)}% | ROAS: ${roas.toFixed(2)}\nTop campanha: ${top?.name} (CPA R$${top?.cpa?.toFixed(2)}, ${top?.conversions} vendas)\n\nEm 5 linhas: diagnóstico · ação #1 urgente · criativo para hoje · produto para criar · projeção para R$100k.`;
+    const p=`ANÁLISE AUTOMÁTICA — DADOS REAIS (7 dias)
+Gasto total: R$${totSpend.toFixed(2)} | Vendas: ${totSales} | CPA médio: R$${avgCpa.toFixed(2)} | CTR: ${avgCtr.toFixed(2)}% | ROAS: ${roas.toFixed(2)}
+Top campanha: ${top?.name} (CPA R$${top?.cpa?.toFixed(2)}, ${top?.conversions} vendas)
+
+MEMÓRIA DA CONTA (padrões recorrentes):
+${memoryPromptBlock}
+
+Em 5 linhas: diagnóstico · ação #1 urgente · criativo para hoje · produto para criar · projeção para R$100k.`;
     try {
       const res = await fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({apiKey:aiApiKey,prompt:p,system:SYSTEM_PROMPT})});
       const data=await res.json();
@@ -479,7 +675,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
       setAutoLog(l=>[...l,`[${ts}] 🧠 ${brief.slice(0,220)}…`]);
       addLog("ok","Brief automático gerado");
     } catch { setAutoLog(l=>[...l,`[${ts}] ⚠ Erro no brief`]); }
-  },[activeCamps,totSpend,totSales,avgCpa,avgCtr,roas]);
+  },[activeCamps,totSpend,totSales,avgCpa,avgCtr,roas,aiApiKey,memoryPromptBlock]);
 
   const toggleAuto=()=>{
     if(autoMode){clearInterval(autoRef.current);setAutoMode(false);setAutoLog(l=>[...l,`[${new Date().toLocaleTimeString("pt-BR")}] ⏹ Pausado`]);}
@@ -580,6 +776,29 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                   </div>
                 </div>
               ))}
+            </div>
+
+            <div className="card gb">
+              <div className="ctitle">🧠 Padrões da Conta</div>
+              {!memoryInsights ? (
+                <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>Sem memória consolidada ainda. Faça um sync para registrar padrões recorrentes.</div>
+              ) : (
+                <div style={{display:"grid",gap:10}}>
+                  <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txm)"}}>Versão {accountMemory?.version} · expira em {accountMemory?.expiresAt ? new Date(accountMemory.expiresAt).toLocaleDateString("pt-BR") : "n/d"}</div>
+                  <div style={{fontSize:12,color:"var(--txm)"}}>
+                    <strong style={{color:"var(--gold)"}}>Criativos vencedores:</strong> {(memoryInsights.creativeWinners||[]).slice(0,3).map(c=>`${c.creative} (${c.wins}x)`).join(" · ") || "Sem dados"}
+                  </div>
+                  <div style={{fontSize:12,color:"var(--txm)"}}>
+                    <strong style={{color:"var(--gold)"}}>Estabilização de CPA:</strong> {memoryInsights.avgDaysToStabilizeCpa || "n/d"} dias em média
+                  </div>
+                  <div style={{fontSize:12,color:"var(--txm)"}}>
+                    <strong style={{color:"var(--gold)"}}>Faixas de CPA por tipo:</strong> {(memoryInsights.cpaRangesByCampaignType||[]).map(r=>`${r.type} R$${fNum(r.minCpa)}–${fNum(r.maxCpa)}`).join(" · ") || "Sem dados"}
+                  </div>
+                  <div style={{fontSize:12,color:"var(--txm)"}}>
+                    <strong style={{color:"var(--gold)"}}>Gatilhos validados:</strong> {(memoryInsights.triggers||[]).map(t=>`${t.action.toUpperCase()} (${t.hits}x)`).join(" · ") || "Sem dados"}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Winner + update */}
