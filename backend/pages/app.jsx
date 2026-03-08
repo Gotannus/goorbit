@@ -236,6 +236,15 @@ function parseFBJson(raw) {
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
+const normalizeSavedModel = (provider, model) => {
+  if (!model) return provider === "claude" ? "claude-haiku-4-5-20251001" : "gemini-2.5-flash";
+  if (provider === "claude" && ["claude-3-5-sonnet-latest","claude-3-7-sonnet-latest"].includes(model)) return "claude-sonnet-4-6";
+  if (provider === "claude" && ["claude-3-haiku-20240307","claude-3-5-haiku-latest"].includes(model)) return "claude-haiku-4-5-20251001";
+  if (provider === "gemini" && model === "gemini-2.0-flash") return "gemini-2.5-flash";
+  if (provider === "gemini" && model === "gemini-2.0-flash-lite") return "gemini-2.5-flash-lite";
+  return model;
+};
+
 function AppContent() {
   const [tab,      setTab]      = useState("dashboard");
   const [campaigns,setCampaigns]= useState(REAL_CAMPAIGNS);
@@ -263,7 +272,10 @@ function AppContent() {
   const [genCreat, setGenCreat] = useState([]);
   const [geminiKey,setGeminiKey]= useState("");
   const [geminiErr,setGeminiErr]= useState("");
+  const [aiProvider, setAiProvider] = useState("gemini");
   const [aiApiKey, setAiApiKey] = useState("");
+  const [claudeApiKey, setClaudeApiKey] = useState("");
+  const [aiModel, setAiModel] = useState("gemini-2.5-flash");
   const [fbToken,  setFbToken]  = useState("");
   const [fbAppId,  setFbAppId]  = useState("");
   const [fbAppSecret, setFbAppSecret] = useState("");
@@ -324,10 +336,10 @@ function AppContent() {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiApiKey, prompt, system: SYSTEM_PROMPT }),
+        body: JSON.stringify({ provider: aiProvider, apiKey: aiProvider === "claude" ? claudeApiKey : aiApiKey, model: aiModel, prompt, system: SYSTEM_PROMPT }),
       });
       const data = await res.json();
-      if (data.error) { setAiOut("Erro: " + data.error); setAiLoad(false); return; }
+      if (data.error) { setAiOut(`Erro (${data.provider || aiProvider} · ${data.model || aiModel}): ${data.error}`); setAiLoad(false); return; }
       const text = data.text || "Sem resposta.";
       let i = 0;
       const iv = setInterval(() => {
@@ -335,9 +347,9 @@ function AppContent() {
         if (outRef.current) outRef.current.scrollTop = outRef.current.scrollHeight;
         if (i >= text.length) clearInterval(iv);
       }, 10);
-    } catch { setAiOut("Erro de conexão. Verifique sua API Key do Gemini na aba Sync."); }
+    } catch { setAiOut("Erro de conexão. Verifique sua API Key do provedor na aba Sync."); }
     finally { setAiLoad(false); }
-  }, [aiApiKey]);
+  }, [aiProvider, aiApiKey, claudeApiKey, aiModel]);
 
   // ── Auto analyze on first load ────────────────────────────────────────────
   useEffect(()=>{
@@ -345,6 +357,37 @@ function AppContent() {
     setFat(totRev);
   // eslint-disable-next-line
   },[]);
+
+  // ── Persistência local das credenciais/config de sync ─────────────────────
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("goorbit.sync.config.v1");
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      const savedProvider = saved.aiProvider || "gemini";
+      setAiProvider(savedProvider);
+      if (saved.aiApiKey) setAiApiKey(saved.aiApiKey);
+      if (saved.claudeApiKey) setClaudeApiKey(saved.claudeApiKey);
+      setAiModel(normalizeSavedModel(savedProvider, saved.aiModel));
+      if (saved.fbToken) setFbToken(saved.fbToken);
+      if (saved.fbAppId) setFbAppId(saved.fbAppId);
+      if (saved.fbAppSecret) setFbAppSecret(saved.fbAppSecret);
+      if (saved.longToken) setLongToken(saved.longToken);
+      if (typeof saved.syncAuto === "boolean") setSyncAuto(saved.syncAuto);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto };
+    localStorage.setItem("goorbit.sync.config.v1", JSON.stringify(payload));
+  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto]);
+
+  useEffect(() => {
+    if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-haiku-4-5-20251001");
+    if (aiProvider === "gemini" && aiModel.startsWith("claude")) setAiModel("gemini-2.5-flash");
+  }, [aiProvider]);
 
   // ── Gerar Long-lived Token ────────────────────────────────────────────────
   const getLongToken = async () => {
@@ -440,10 +483,11 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
       const res = await fetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: aiApiKey, prompt: briefPrompt, system: SYSTEM_PROMPT }),
+        body: JSON.stringify({ provider: aiProvider, apiKey: aiProvider === "claude" ? claudeApiKey : aiApiKey, model: aiModel, prompt: briefPrompt, system: SYSTEM_PROMPT }),
       });
       const d = await res.json();
-      const raw = d.content?.map(b=>b.text||"").join("")||"[]";
+      if (d.error) throw new Error(d.error);
+      const raw = d.text || "[]";
       let items = [];
       try {
         const clean = raw.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m => m.replace(/```json\n?|```\n?/g,"")).trim();
@@ -473,13 +517,13 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
     if(pause.length) setAutoLog(l=>[...l,`[${ts}] ⏸ ${pause.length} campanha(s) para PAUSAR`]);
     const p=`ANÁLISE AUTOMÁTICA — DADOS REAIS (7 dias)\nGasto total: R$${totSpend.toFixed(2)} | Vendas: ${totSales} | CPA médio: R$${avgCpa.toFixed(2)} | CTR: ${avgCtr.toFixed(2)}% | ROAS: ${roas.toFixed(2)}\nTop campanha: ${top?.name} (CPA R$${top?.cpa?.toFixed(2)}, ${top?.conversions} vendas)\n\nEm 5 linhas: diagnóstico · ação #1 urgente · criativo para hoje · produto para criar · projeção para R$100k.`;
     try {
-      const res = await fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({apiKey:aiApiKey,prompt:p,system:SYSTEM_PROMPT})});
+      const res = await fetch("/api/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:aiProvider,apiKey:aiProvider==="claude"?claudeApiKey:aiApiKey,model:aiModel,prompt:p,system:SYSTEM_PROMPT})});
       const data=await res.json();
       const brief=data.text||"";
       setAutoLog(l=>[...l,`[${ts}] 🧠 ${brief.slice(0,220)}…`]);
       addLog("ok","Brief automático gerado");
     } catch { setAutoLog(l=>[...l,`[${ts}] ⚠ Erro no brief`]); }
-  },[activeCamps,totSpend,totSales,avgCpa,avgCtr,roas]);
+  },[activeCamps,totSpend,totSales,avgCpa,avgCtr,roas,aiProvider,aiApiKey,claudeApiKey,aiModel]);
 
   const toggleAuto=()=>{
     if(autoMode){clearInterval(autoRef.current);setAutoMode(false);setAutoLog(l=>[...l,`[${new Date().toLocaleTimeString("pt-BR")}] ⏹ Pausado`]);}
@@ -970,19 +1014,59 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
           <div className="main">
             {/* API Key Gemini */}
             <div className="card" style={{borderColor:"rgba(66,133,244,.3)",background:"rgba(66,133,244,.025)"}}>
-              <div className="ctitle" style={{color:"rgba(130,177,255,.9)"}}>🤖 API Key — Google Gemini</div>
-              <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",marginBottom:10,lineHeight:1.7}}>
-                Gere em <span style={{color:"var(--gold)"}}>aistudio.google.com/app/apikey</span>. Necessária para IA Conselheira, Piloto Auto e geração de criativos.
+              <div className="ctitle" style={{color:"rgba(130,177,255,.9)"}}>🤖 Provedor de IA</div>
+              <div style={{display:"grid",gap:5,marginBottom:10}}>
+                <div className="flbl">Provedor</div>
+                <select className="finp" value={aiProvider} onChange={e=>setAiProvider(e.target.value)} style={{fontFamily:"var(--mono)",fontSize:12}}>
+                  <option value="gemini">Google Gemini</option>
+                  <option value="claude">Anthropic Claude</option>
+                </select>
               </div>
-              <input
-                className="finp"
-                type="password"
-                placeholder="AIza..."
-                value={aiApiKey}
-                onChange={e => setAiApiKey(e.target.value)}
-                style={{width:"100%",fontFamily:"var(--mono)",fontSize:12}}
-              />
-              {aiApiKey && <div className="succbox" style={{marginTop:8}}>✓ Gemini configurado — IA pronta!</div>}
+
+              {aiProvider === "gemini" ? (
+                <>
+                  <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",marginBottom:10,lineHeight:1.7}}>
+                    Gere em <span style={{color:"var(--gold)"}}>aistudio.google.com/app/apikey</span>. Necessária para IA Conselheira, Piloto Auto e geração de criativos.
+                  </div>
+                  <input
+                    className="finp"
+                    type="password"
+                    placeholder="AIza..."
+                    value={aiApiKey}
+                    onChange={e => setAiApiKey(e.target.value)}
+                    style={{width:"100%",fontFamily:"var(--mono)",fontSize:12}}
+                  />
+                  <div style={{display:"grid",gap:5,marginTop:8}}>
+                    <div className="flbl">Modelo Gemini padrão</div>
+                    <select className="finp" value={aiModel} onChange={e=>setAiModel(e.target.value)} style={{fontFamily:"var(--mono)",fontSize:12}}>
+                      {["gemini-2.5-flash","gemini-2.5-flash-lite","gemini-1.5-flash"].map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>Se o seu projeto tiver quota 0 para um modelo, troque aqui sem precisar mexer no código.</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",marginBottom:10,lineHeight:1.7}}>
+                    Cole sua API key da Anthropic (prefixo <span style={{color:"var(--gold)"}}>sk-ant-...</span>) para usar o Claude.
+                  </div>
+                  <input
+                    className="finp"
+                    type="password"
+                    placeholder="sk-ant-api03-..."
+                    value={claudeApiKey}
+                    onChange={e => setClaudeApiKey(e.target.value)}
+                    style={{width:"100%",fontFamily:"var(--mono)",fontSize:12}}
+                  />
+                  <div style={{display:"grid",gap:5,marginTop:8}}>
+                    <div className="flbl">Modelo Claude padrão (conta atual)</div>
+                    <select className="finp" value={aiModel} onChange={e=>setAiModel(e.target.value)} style={{fontFamily:"var(--mono)",fontSize:12}}>
+                      {["claude-haiku-4-5-20251001","claude-sonnet-4-6","claude-opus-4-6"].map(m=><option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {((aiProvider === "gemini" && aiApiKey) || (aiProvider === "claude" && claudeApiKey)) && <div className="succbox" style={{marginTop:8}}>✓ {aiProvider === "gemini" ? "Gemini" : "Claude"} configurado — IA pronta!</div>}
             </div>
 
             {/* Token Meta + Long-lived */}
