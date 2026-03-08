@@ -199,40 +199,98 @@ const fNum  = v => Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,max
 // PAUSAR   → CPA > R$25  (risco de prejuízo)
 const cSt   = cpa => cpa <= 18 ? "sc" : cpa <= 25 ? "ho" : "pa";
 const stLbl = { sc:"ESCALAR", ho:"MANTER", pa:"PAUSAR" };
+const INSIGHT_WINDOWS = [1, 7, 15, 30, 60];
+
+const toNum = (v) => Number.parseFloat(v ?? 0) || 0;
+const toInt = (v) => Number.parseInt(v ?? 0, 10) || 0;
+const windowLabel = (days) => (days === 1 ? "hoje" : `${days}d`);
+
+const actionValue = (row, keys = [], source = "actions") => {
+  const list = row?.[source] || [];
+  for (const k of keys) {
+    const found = list.find((a) => a.action_type === k);
+    if (found) return toNum(found.value);
+  }
+  return 0;
+};
+
+function normalizeInsightRow(row, i, level = "campaign") {
+  const conversionsRaw = actionValue(row, ["offsite_conversion.fb_pixel_purchase", "purchase", "omni_purchase", "web_in_store_purchase"]);
+  const conversions = Math.round(conversionsRaw);
+  const spend = toNum(row.spend);
+  const impressions = toInt(row.impressions);
+  const clicks = toInt(row.clicks);
+  const ctrRaw = toNum(row.ctr);
+  const ctr = ctrRaw > 10 ? ctrRaw / 10 : ctrRaw;
+  const cpc = toNum(row.cpc);
+  const cpm = toNum(row.cpm);
+  const frequency = toNum(row.frequency);
+  const purchaseValue = actionValue(row, ["offsite_conversion.fb_pixel_purchase", "purchase", "omni_purchase", "web_in_store_purchase"], "action_values");
+  const revenue = purchaseValue > 0 ? purchaseValue : conversions * TICKET;
+
+  const idByLevel = {
+    account: row.account_id,
+    campaign: row.campaign_id,
+    adset: row.adset_id,
+    ad: row.ad_id,
+  };
+  const nameByLevel = {
+    account: row.account_name || "Conta",
+    campaign: row.campaign_name || `Campanha ${i + 1}`,
+    adset: row.adset_name || row.campaign_name || `Adset ${i + 1}`,
+    ad: row.ad_name || row.adset_name || `Anúncio ${i + 1}`,
+  };
+
+  return {
+    id: idByLevel[level] ?? `imp_${i}`,
+    name: String(nameByLevel[level]).replace(/\[Mulher Forte\]/gi, "[MF]"),
+    spend,
+    revenue,
+    impressions,
+    clicks,
+    conversions,
+    ctr: parseFloat(ctr.toFixed(2)),
+    cpc,
+    cpm,
+    frequency,
+    conversionRate: clicks > 0 ? (conversions / clicks) * 100 : 0,
+    cpa: conversions > 0 ? spend / conversions : 999,
+    roas: spend > 0 && revenue > 0 ? revenue / spend : 0,
+    campaignId: row.campaign_id,
+    adsetId: row.adset_id,
+    adId: row.ad_id,
+  };
+}
+
+const aggregateMetrics = (rows = []) => {
+  const spend = rows.reduce((s, r) => s + toNum(r.spend), 0);
+  const impressions = rows.reduce((s, r) => s + toInt(r.impressions), 0);
+  const clicks = rows.reduce((s, r) => s + toInt(r.clicks), 0);
+  const conversions = rows.reduce((s, r) => s + toNum(r.conversions), 0);
+  const revenue = rows.reduce((s, r) => s + toNum(r.revenue), 0);
+  const weightedFreq = rows.reduce((s, r) => s + toNum(r.frequency) * toInt(r.impressions), 0);
+
+  return {
+    spend,
+    impressions,
+    clicks,
+    conversions,
+    revenue,
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    cpa: conversions > 0 ? spend / conversions : 0,
+    cpc: clicks > 0 ? spend / clicks : 0,
+    cpm: impressions > 0 ? (spend / impressions) * 1000 : 0,
+    roas: spend > 0 ? revenue / spend : 0,
+    frequency: impressions > 0 ? weightedFreq / impressions : 0,
+    conversionRate: clicks > 0 ? (conversions / clicks) * 100 : 0,
+  };
+};
 
 // ── Parse FB JSON (manual import) ─────────────────────────────────────────
-function parseFBJson(raw) {
+function parseFBJson(raw, { level = "campaign" } = {}) {
   const rows = Array.isArray(raw) ? raw : (raw?.data ?? []);
   if (!rows.length) throw new Error("Nenhuma campanha encontrada no JSON.");
-  return rows
-    .map((c, i) => {
-      const getPurchases = () => {
-        if (!c.actions) return 0;
-        const keys = ["offsite_conversion.fb_pixel_purchase","purchase","omni_purchase","web_in_store_purchase"];
-        for (const k of keys) {
-          const found = c.actions.find(a => a.action_type === k);
-          if (found) return parseFloat(found.value);
-        }
-        return 0;
-      };
-      const conversions = getPurchases();
-      const spend = parseFloat(c.spend ?? 0);
-      const ctrRaw = parseFloat(c.ctr ?? 0);
-      const ctr = ctrRaw > 10 ? ctrRaw / 10 : ctrRaw; // normalize
-      const revenue = conversions * TICKET;
-      return {
-        id: c.campaign_id ?? `imp_${i}`,
-        name: (c.campaign_name ?? `Campanha ${i+1}`).replace(/\[Mulher Forte\]/gi,"[MF]"),
-        spend, revenue,
-        impressions: parseInt(c.impressions ?? 0),
-        clicks: parseInt(c.clicks ?? 0),
-        conversions: Math.round(conversions),
-        ctr: parseFloat(ctr.toFixed(2)),
-        cpa: conversions > 0 ? spend / conversions : 999,
-        roas: spend > 0 && conversions > 0 ? revenue / spend : 0,
-      };
-    })
-    .filter(c => c.impressions > 0 || c.spend > 0);
+  return rows.map((row, i) => normalizeInsightRow(row, i, level)).filter(c => c.impressions > 0 || c.spend > 0);
 }
 
 // ── Main App ───────────────────────────────────────────────────────────────
@@ -274,6 +332,11 @@ function AppContent() {
   const [syncOk,   setSyncOk]   = useState("");
   const [adCreatives, setAdCreatives] = useState([]);
   const [creativesLoad, setCreativesLoad] = useState(false);
+  const [selectedWindow, setSelectedWindow] = useState(7);
+  const [campaignsByWindow, setCampaignsByWindow] = useState({ 7: REAL_CAMPAIGNS });
+  const [windowMetrics, setWindowMetrics] = useState({ 7: aggregateMetrics(REAL_CAMPAIGNS) });
+  const [creativeMetricsByWindow, setCreativeMetricsByWindow] = useState({});
+  const [syncSnapshots, setSyncSnapshots] = useState([]);
   const outRef  = useRef(null);
   const autoRef = useRef(null);
 
@@ -291,13 +354,49 @@ function AppContent() {
   const pct          = Math.min((fat / META_GOAL) * 100, 100);
 
   const totalRevReal = totRev;  // revenue from FB data this week
-  const salesPerDay  = totSales / 7;
-  const spendPerDay  = totSpend / 7;
+  const salesPerDay  = totSales / Math.max(selectedWindow, 1);
+  const spendPerDay  = totSpend / Math.max(selectedWindow, 1);
+  const currentBaseline = windowMetrics[selectedWindow] || aggregateMetrics(activeCamps);
+  const baselineCompare = {
+    cpa: [1, 7, 30].map((d) => ({ days: d, value: windowMetrics[d]?.cpa || 0 })),
+    ctr: [1, 7, 30].map((d) => ({ days: d, value: windowMetrics[d]?.ctr || 0 })),
+    roas: [1, 7, 30].map((d) => ({ days: d, value: windowMetrics[d]?.roas || 0 })),
+  };
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
     setSyncLog(l => [...l.slice(-29), {ts,type,msg}]);
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem("goorbit_meta_snapshots");
+      if (!raw) return;
+      const snap = JSON.parse(raw);
+      if (!snap?.latest) return;
+      if (snap.latest.campaignsByWindow) setCampaignsByWindow(snap.latest.campaignsByWindow);
+      if (snap.latest.windowMetrics) setWindowMetrics(snap.latest.windowMetrics);
+      if (snap.latest.creativeMetricsByWindow) setCreativeMetricsByWindow(snap.latest.creativeMetricsByWindow);
+      if (Array.isArray(snap.history)) setSyncSnapshots(snap.history);
+      const fallback = snap.latest.campaignsByWindow?.[selectedWindow] || snap.latest.campaignsByWindow?.[7];
+      if (fallback?.length) setCampaigns(fallback);
+      if (Array.isArray(snap.latest.adCreatives)) setAdCreatives(snap.latest.adCreatives);
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const rows = campaignsByWindow[selectedWindow];
+    if (rows?.length) setCampaigns(rows);
+  }, [selectedWindow, campaignsByWindow]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const latest = { campaignsByWindow, windowMetrics, creativeMetricsByWindow, adCreatives };
+    const history = syncSnapshots.slice(-30);
+    window.localStorage.setItem("goorbit_meta_snapshots", JSON.stringify({ latest, history }));
+  }, [campaignsByWindow, windowMetrics, creativeMetricsByWindow, adCreatives, syncSnapshots]);
 
   // ── Manual JSON import ────────────────────────────────────────────────────
   const importJSON = () => {
@@ -373,26 +472,60 @@ function AppContent() {
     addLog("info", "Iniciando sincronização com Meta API…");
 
     try {
-      // 1. Buscar insights das campanhas (últimos 7 dias)
-      const insRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}`);
-      const insData = await insRes.json();
-      if (insData.error) throw new Error(insData.error);
-      const parsed = parseFBJson(insData.data || []);
-      setCampaigns(parsed);
-      setUsingReal(true); setFbConn(true);
-      // ✅ Atualiza o dashboard com os novos dados
-      const newTotRev = parsed.reduce((s,c)=>s+c.conversions,0) * TICKET;
-      setFat(newTotRev);
-      addLog("ok", `✓ ${parsed.length} campanhas sincronizadas`);
+      const campaignsWindowData = {};
+      const metricsWindowData = {};
 
-      // 2. Buscar criativos dos anúncios ativos
+      await Promise.all(INSIGHT_WINDOWS.map(async (days) => {
+        const insRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}&days=${days}&level=campaign`);
+        const insData = await insRes.json();
+        if (insData.error) throw new Error(`${windowLabel(days)} campanhas: ${insData.error}`);
+        const parsed = parseFBJson(insData.data || [], { level: "campaign" });
+        campaignsWindowData[days] = parsed;
+        metricsWindowData[days] = aggregateMetrics(parsed);
+      }));
+
+      const activeWindow = campaignsWindowData[selectedWindow]?.length ? selectedWindow : 7;
+      setCampaignsByWindow(campaignsWindowData);
+      setWindowMetrics(metricsWindowData);
+      setCampaigns(campaignsWindowData[activeWindow] || []);
+      setUsingReal(true);
+      setFbConn(true);
+
+      const newTotRev = (campaignsWindowData[activeWindow] || []).reduce((sum, c) => sum + c.revenue, 0);
+      setFat(newTotRev);
+      addLog("ok", `✓ Insights sincronizados em janelas ${INSIGHT_WINDOWS.join("/")} dias`);
+
       setCreativesLoad(true);
       const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
       const adsData = await adsRes.json();
       if (adsData.error) throw new Error("Criativos: " + adsData.error);
-      setAdCreatives(adsData.data || []);
-      addLog("ok", `✓ ${(adsData.data||[]).length} criativos carregados`);
-      setSyncOk(`✓ Sincronizado! ${parsed.length} campanhas + ${(adsData.data||[]).length} criativos — ${new Date().toLocaleTimeString("pt-BR")}`);
+
+      const creativeWindow = {};
+      await Promise.all(INSIGHT_WINDOWS.map(async (days) => {
+        const adInsRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}&days=${days}&level=ad`);
+        const adInsData = await adInsRes.json();
+        if (adInsData.error) throw new Error(`${windowLabel(days)} criativos: ${adInsData.error}`);
+        const adRows = parseFBJson(adInsData.data || [], { level: "ad" });
+        creativeWindow[days] = aggregateMetrics(adRows);
+      }));
+
+      const creatives = (adsData.data || []).map((creative) => ({
+        ...creative,
+        windows: Object.fromEntries(INSIGHT_WINDOWS.map((days) => [days, creativeWindow[days] || {}])),
+      }));
+
+      setAdCreatives(creatives);
+      setCreativeMetricsByWindow(creativeWindow);
+      addLog("ok", `✓ ${(adsData.data || []).length} criativos carregados`);
+
+      const snapshot = {
+        ts: new Date().toISOString(),
+        windows: metricsWindowData,
+        creativeWindows: creativeWindow,
+      };
+      setSyncSnapshots((prev) => [...prev.slice(-29), snapshot]);
+
+      setSyncOk(`✓ Sincronizado em lote (${INSIGHT_WINDOWS.join("/")}d): ${Object.values(campaignsWindowData).reduce((sum, rows) => sum + rows.length, 0)} linhas de campanha + ${(adsData.data || []).length} criativos — ${new Date().toLocaleTimeString("pt-BR")}`);
     } catch(e) {
       setSyncErr("Erro: " + e.message);
       addLog("warn", "Erro na sincronização: " + e.message);
@@ -638,6 +771,19 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {/* ═══ CAMPANHAS ═══ */}
         {tab==="campanhas"&&(
           <div className="main">
+            <div className="card">
+              <div className="ctitle">🪟 Janela de análise</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+                {INSIGHT_WINDOWS.map((w)=>(
+                  <button key={w} className={`tab ${selectedWindow===w?"active":""}`} onClick={()=>setSelectedWindow(w)} style={{borderBottom:"1px solid var(--bd)",borderRadius:8,padding:"8px 12px"}}>
+                    {windowLabel(w)}
+                  </button>
+                ))}
+              </div>
+              <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txm)",lineHeight:1.6}}>
+                CPA {windowLabel(1)} <b>R${fNum(baselineCompare.cpa[0].value)}</b> vs 7d <b>R${fNum(baselineCompare.cpa[1].value)}</b> vs 30d <b>R${fNum(baselineCompare.cpa[2].value)}</b> · CTR {windowLabel(1)} <b>{fNum(baselineCompare.ctr[0].value)}%</b> vs 7d <b>{fNum(baselineCompare.ctr[1].value)}%</b> vs 30d <b>{fNum(baselineCompare.ctr[2].value)}%</b>
+              </div>
+            </div>
             {/* Summary stats */}
             <div className="c3">
               {[
@@ -684,6 +830,16 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
               </div>
 
               <div className="card">
+                <div className="ctitle">📐 Baseline da janela {windowLabel(selectedWindow)}</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8,marginBottom:12,fontFamily:"var(--mono)",fontSize:11}}>
+                  <div>CPA: <b>R${fNum(currentBaseline.cpa)}</b></div>
+                  <div>CTR: <b>{fNum(currentBaseline.ctr)}%</b></div>
+                  <div>CPC: <b>R${fNum(currentBaseline.cpc)}</b></div>
+                  <div>CPM: <b>R${fNum(currentBaseline.cpm)}</b></div>
+                  <div>ROAS: <b>{fNum(currentBaseline.roas)}</b></div>
+                  <div>Frequência: <b>{fNum(currentBaseline.frequency)}</b></div>
+                  <div>Conversão: <b>{fNum(currentBaseline.conversionRate)}%</b></div>
+                </div>
                 <div className="ctitle">🎯 Motor de Decisão — CPA real R${fNum(CPA_REAL)}</div>
                 {[
                   {c:"CPA ≤ R$18",       a:"ESCALAR +30% imediatamente",         col:"var(--green)"},
@@ -713,6 +869,12 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {/* ═══ CRIATIVOS ═══ */}
         {tab==="criativos"&&(
           <div className="main">
+            <div className="card">
+              <div className="ctitle">🪟 Comparativo por janela (criativos)</div>
+              <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txm)",lineHeight:1.6}}>
+                CPA {windowLabel(1)} <b>R${fNum(creativeMetricsByWindow[1]?.cpa || 0)}</b> vs 7d <b>R${fNum(creativeMetricsByWindow[7]?.cpa || 0)}</b> vs 30d <b>R${fNum(creativeMetricsByWindow[30]?.cpa || 0)}</b> · ROAS {windowLabel(1)} <b>{fNum(creativeMetricsByWindow[1]?.roas || 0)}</b> vs 7d <b>{fNum(creativeMetricsByWindow[7]?.roas || 0)}</b> vs 30d <b>{fNum(creativeMetricsByWindow[30]?.roas || 0)}</b>
+              </div>
+            </div>
 
             {/* Gemini key */}
             {/* Performance ranking */}
