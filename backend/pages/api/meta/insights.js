@@ -14,7 +14,7 @@ export default async function handler(req, res) {
 
   try {
     const url = new URL(`https://graph.facebook.com/v19.0/${account_id}/insights`);
-    url.searchParams.set("fields", "campaign_id,campaign_name,spend,impressions,clicks,ctr,actions");
+    url.searchParams.set("fields", "campaign_id,campaign_name,spend,impressions,clicks,ctr,actions,action_values,purchase_roas");
     url.searchParams.set("date_preset", date_preset);
     url.searchParams.set("level", "campaign");
     url.searchParams.set("access_token", token);

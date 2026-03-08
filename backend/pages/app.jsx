@@ -236,11 +236,19 @@ function parseFBJson(raw) {
   if (!rows.length) throw new Error("Nenhuma campanha encontrada no JSON.");
   return rows
     .map((c, i) => {
+      const purchaseKeys = ["offsite_conversion.fb_pixel_purchase","purchase","omni_purchase","web_in_store_purchase"];
       const getPurchases = () => {
         if (!c.actions) return 0;
-        const keys = ["offsite_conversion.fb_pixel_purchase","purchase","omni_purchase","web_in_store_purchase"];
-        for (const k of keys) {
+        for (const k of purchaseKeys) {
           const found = c.actions.find(a => a.action_type === k);
+          if (found) return parseFloat(found.value);
+        }
+        return 0;
+      };
+      const getRevenueFromActionValues = () => {
+        if (!c.action_values) return 0;
+        for (const k of purchaseKeys) {
+          const found = c.action_values.find(a => a.action_type === k);
           if (found) return parseFloat(found.value);
         }
         return 0;
@@ -249,7 +257,7 @@ function parseFBJson(raw) {
       const spend = parseFloat(c.spend ?? 0);
       const ctrRaw = parseFloat(c.ctr ?? 0);
       const ctr = ctrRaw > 10 ? ctrRaw / 10 : ctrRaw; // normalize
-      const revenue = conversions * TICKET;
+      const revenue = getRevenueFromActionValues() || (conversions * TICKET);
       return {
         id: c.campaign_id ?? `imp_${i}`,
         name: (c.campaign_name ?? `Campanha ${i+1}`).replace(/\[Mulher Forte\]/gi,"[MF]"),
@@ -321,7 +329,7 @@ function AppContent() {
   const activeCamps  = campaigns.filter(c => c.spend > 0);
   const totSpend     = campaigns.reduce((s,c)=>s+c.spend, 0);
   const totSales     = campaigns.reduce((s,c)=>s+c.conversions, 0);
-  const totRev       = totSales * TICKET;
+  const totRev       = campaigns.reduce((s,c)=>s+(c.revenue||0), 0);
   const avgCpa       = totSales > 0 ? totSpend / totSales : 0;
   const avgCtr       = activeCamps.length > 0 ? activeCamps.reduce((s,c)=>s+c.ctr,0)/activeCamps.length : 0;
   const roas         = totSpend > 0 ? totRev / totSpend : 0;
@@ -461,7 +469,7 @@ function AppContent() {
       setCampaigns(parsed);
       setUsingReal(true); setFbConn(true);
       // ✅ Atualiza o dashboard com os novos dados
-      const newTotRev = parsed.reduce((s,c)=>s+c.conversions,0) * TICKET;
+      const newTotRev = parsed.reduce((s,c)=>s+(c.revenue||0),0);
       setFat(newTotRev);
       addLog("ok", `✓ ${parsed.length} campanhas sincronizadas`);
 
@@ -482,6 +490,21 @@ function AppContent() {
       setSyncLoad(false);
       setCreativesLoad(false);
     }
+  };
+
+  const pullTopCreatives = async () => {
+    if (!fbToken.trim()) { setSyncErr("Cole o token de acesso para puxar criativos."); setTab("sync"); return; }
+    setCreativesLoad(true); setSyncErr("");
+    try {
+      const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
+      const adsData = await adsRes.json();
+      if (adsData.error) throw new Error(adsData.error);
+      const creatives = adsData.data || [];
+      setAdCreatives(creatives);
+      addLog("ok", `✓ Top criativos atualizados (${creatives.filter(c=>c.imageUrl).length} com imagem)`);
+    } catch(e) {
+      setSyncErr("Erro ao buscar criativos: " + e.message);
+    } finally { setCreativesLoad(false); }
   };
 
   // ── Generate image prompts + open Gemini ─────────────────────────────────
@@ -613,7 +636,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 {[
                   {lbl:"Gasto Total",val:fBRL(totSpend),sub:"7 dias"},
                   {lbl:"Vendas",val:String(totSales),sub:`~${salesPerDay.toFixed(1)}/dia`},
-                  {lbl:"Faturamento",val:fBRL(totRev),sub:`Ticket R$${TICKET}`},
+                  {lbl:"Faturamento",val:fBRL(totRev),sub:"Compra valor de conversão"},
                   {lbl:"ROAS",val:fNum(roas),sub:`CPA R$${fNum(avgCpa)}`},
                 ].map(m=>(
                   <div key={m.lbl} style={{textAlign:"center",padding:"10px 0"}}>
@@ -832,9 +855,14 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
 
             <div className="c2">
               {/* TOP 5 criativos reais (Meta) */}
-              {topCreatives.length > 0 && (
-                <div className="card gb" style={{marginBottom:12}}>
-                  <div className="ctitle">🏆 Top 5 Criativos (7 dias · menor CPA)</div>
+              <div className="card gb" style={{marginBottom:12}}>
+                <div className="ctitle">🏆 Top 5 Criativos (7 dias · menor CPA)</div>
+                <div className="brow" style={{marginBottom:10}}>
+                  <button className="btnol" onClick={pullTopCreatives} disabled={creativesLoad||!fbToken.trim()}>
+                    {creativesLoad?"Atualizando criativos…":"🔄 Puxar melhores criativos"}
+                  </button>
+                </div>
+                {topCreatives.length>0 ? (
                   <div style={{display:"grid",gap:10}}>
                     {topCreatives.map((cr, idx) => (
                       <div key={cr.adId} style={{display:"flex",gap:12,alignItems:"flex-start",background:"rgba(255,255,255,.022)",border:"1px solid var(--bd)",borderRadius:9,padding:"11px 13px"}}>
@@ -851,8 +879,10 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="tipbox">Nenhum criativo com imagem carregado ainda. Clique em <b>Puxar melhores criativos</b> ou sincronize na aba Sync Automático.</div>
+                )}
+              </div>
 
               {/* LEFT: geração */}
               <div className="card">
