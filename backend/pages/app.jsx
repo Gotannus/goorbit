@@ -227,10 +227,56 @@ const fNum  = v => Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,max
 // DUPLICAR 3X apenas em alto desempenho
 // MANTER em faixa saudável
 // CORTAR acima de R$14 (não lucrativo)
-const SCALE_CPA = 11;
+const SCALE_CPA = 12.5;
 const CUT_CPA = 14;
 const cSt   = cpa => cpa <= SCALE_CPA ? "sc" : cpa <= CUT_CPA ? "ho" : "pa";
 const stLbl = { sc:"DUPLICAR 3X", ho:"MANTER", pa:"CORTAR" };
+
+const getCampaignTrend = (dailyRows = [], fallbackCpa = 999) => {
+  const last3 = (dailyRows || []).slice(0, 3).map((d) => Number(d.cpa || 999));
+  if (last3.length < 3 || last3.some((v) => !Number.isFinite(v))) {
+    return {
+      label: "Dados insuficientes",
+      tone: "neutral",
+      projectedCpa3d: Number(fallbackCpa || 999),
+      alert: false,
+      canScale: Number(fallbackCpa || 999) <= SCALE_CPA,
+    };
+  }
+
+  const improving = last3[0] < last3[1] && last3[1] < last3[2];
+  const worsening = last3[0] > last3[1] && last3[1] > last3[2];
+  const projectedCpa3d = (last3[0] + last3[1] + last3[2]) / 3;
+
+  if (improving) {
+    return {
+      label: `Melhorando (${fNum(last3[2])} → ${fNum(last3[0])})`,
+      tone: "good",
+      projectedCpa3d,
+      alert: false,
+      canScale: projectedCpa3d <= SCALE_CPA,
+    };
+  }
+
+  if (worsening) {
+    return {
+      label: `Piorando (${fNum(last3[2])} → ${fNum(last3[0])})`,
+      tone: "bad",
+      projectedCpa3d,
+      alert: true,
+      canScale: false,
+    };
+  }
+
+  return {
+    label: "Estável nos últimos 3 dias",
+    tone: "neutral",
+    projectedCpa3d,
+    alert: false,
+    canScale: projectedCpa3d <= SCALE_CPA,
+  };
+};
+
 
 // ── Parse FB JSON (manual import) ─────────────────────────────────────────
 function parseFBJson(raw) {
@@ -361,6 +407,11 @@ function AppContent() {
     if (campSortBy === "profit_desc") return (b.profit||0) - (a.profit||0);
     return b.spend - a.spend;
   });
+  const campaignSignals = visibleCampaigns.map((c) => {
+    const daily = campaignDaily[c.id] || [];
+    return { campaign: c, daily, trend: getCampaignTrend(daily, c.cpa) };
+  });
+  const trendingAlerts = campaignSignals.filter((s) => s.trend.alert);
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
@@ -842,8 +893,8 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             <div className="card">
               <div className="ctitle">📣 Relatório por campanha ({periodLabelMap[periodPreset]||periodPreset})</div>
               <div style={{display:"grid",gap:10,maxHeight:620,overflowY:"auto"}}>
-                {visibleCampaigns.map(c=>{
-                  const daily=(campaignDaily[c.id]||[]).slice(0,5);
+                {campaignSignals.map(({ campaign: c, daily, trend })=>{
+                  const last5=daily.slice(0,5);
                   return (
                     <div key={c.id} style={{background:"rgba(255,255,255,.02)",border:"1px solid var(--bd)",borderRadius:10,padding:"12px 13px"}}>
                       <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center",marginBottom:6}}>
@@ -859,9 +910,12 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                         <span style={{color:(c.profit||0)>=0?"var(--green)":"var(--red)"}}>Lucro {fBRL(c.profit||0)}</span>
                         <span style={{color:"var(--txm)"}}>Status {(c.status||"-")}</span>
                       </div>
-                      {daily.length>0 ? (
+                      <div style={{fontFamily:"var(--mono)",fontSize:11,marginBottom:8,color:trend.tone==="good"?"var(--green)":trend.tone==="bad"?"var(--red)":"var(--txm)"}}>
+                        📈 {trend.label} · Projeção CPA (3d): R${fNum(trend.projectedCpa3d)} {trend.canScale?"· ✅ pode duplicar 3x":""}
+                      </div>
+                      {last5.length>0 ? (
                         <div style={{display:"grid",gap:4}}>
-                          {daily.map((d)=> (
+                          {last5.map((d)=> (
                             <div key={`${c.id}_${d.date}`} style={{display:"grid",gridTemplateColumns:"88px 1fr 1fr 1fr 1fr",gap:8,fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",background:"rgba(255,255,255,.015)",padding:"6px 8px",borderRadius:6}}>
                               <span>{d.date}</span><span>Gasto {fBRL(d.spend)}</span><span>Conv {Math.round(d.conversions)}</span><span>CPA R${fNum(d.cpa)}</span><span>Fatur. {fBRL(d.revenue||0)}</span>
                             </div>
@@ -872,6 +926,20 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                   );
                 })}
               </div>
+            </div>
+
+            <div className="card gb">
+              <div className="ctitle">🚨 Alertas de Projeção (últimos 3 dias)</div>
+              {trendingAlerts.length>0 ? (
+                <div style={{display:"grid",gap:8}}>
+                  {trendingAlerts.map(({campaign, trend})=>(
+                    <div key={campaign.id} style={{padding:"9px 11px",border:"1px solid rgba(248,113,113,.25)",background:"rgba(248,113,113,.06)",borderRadius:8}}>
+                      <div style={{fontSize:12,fontWeight:700,marginBottom:3}}>{campaign.name.replace("[MF] ","")}</div>
+                      <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--red)"}}>{trend.label} · Projeção CPA: R${fNum(trend.projectedCpa3d)}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="tipbox">Nenhuma campanha piorando em sequência nos últimos 3 dias.</div>}
             </div>
 
             <div className="card">
