@@ -3,16 +3,16 @@ import Head from "next/head";
 
 const _css = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: #07070f; }
+body { background: #07070f; font-family:var(--sans); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
 :root {
   --gold:#ffcb50; --gold2:#ff8c00; --gdim:rgba(255,200,80,0.13);
   --green:#4ade80; --red:#f87171; --orange:#fb923c;
   --bg:#07070f; --bg2:rgba(255,255,255,0.022); --bg3:rgba(255,255,255,0.04);
   --bd:rgba(255,255,255,0.07); --bdg:rgba(255,200,80,0.17);
   --tx:#f0ede6; --txd:rgba(240,237,230,0.38); --txm:rgba(240,237,230,0.68);
-  --r:14px; --mono:'DM Mono',monospace; --sans:'Syne',sans-serif;
+  --r:14px; --mono:'DM Mono',monospace; --sans:'Inter','Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
 }
-.app { font-family:var(--sans); background:var(--bg); min-height:100vh; color:var(--tx); overflow-x:hidden; position:relative; }
+.app { font-family:var(--sans); background:var(--bg); min-height:100vh; color:var(--tx); overflow-x:hidden; position:relative; line-height:1.5; }
 .noise { position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.32;
   background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E"); }
 .grid-bg { position:fixed; inset:0; pointer-events:none; z-index:0;
@@ -138,6 +138,36 @@ body { background: #07070f; }
 @keyframes glow { 0%,100%{box-shadow:0 0 0 rgba(74,222,128,0)} 50%{box-shadow:0 0 18px rgba(74,222,128,.32)} }
 @keyframes spin { to{transform:rotate(360deg)} }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+@media (max-width: 1100px) {
+  .main { padding:18px 20px; }
+  .hdr { padding:16px 20px; }
+  .tabs { padding:0 20px; }
+  .c4 { grid-template-columns:repeat(2,1fr); }
+  .c3 { grid-template-columns:1fr 1fr; }
+}
+@media (max-width: 820px) {
+  .hdr { flex-direction:column; align-items:flex-start; gap:12px; }
+  .hright { width:100%; justify-content:space-between; }
+  .c2, .c3, .c4 { grid-template-columns:1fr; }
+  .card { padding:14px; border-radius:12px; }
+  .ctitle { font-size:12px; letter-spacing:.8px; }
+  .mval { font-size:22px; }
+  .metafig { font-size:30px; }
+  .btn, .btnol, .btng { width:100%; justify-content:center; }
+  .brow { display:grid; grid-template-columns:1fr; gap:8px; }
+  .airow { grid-template-columns:1fr; }
+  .finp, .aiinput, .jsontxt { font-size:14px; }
+}
+@media (max-width: 520px) {
+  .main { padding:14px 12px; gap:12px; }
+  .hdr { padding:12px; }
+  .tabs { padding:0 12px; }
+  .tab { font-size:11px; padding:10px 12px; }
+  .fbst, .dpill { font-size:10px; padding:6px 10px; }
+  .lorb { width:36px; height:36px; font-size:18px; }
+  .lname { font-size:16px; }
+  .ltag { letter-spacing:1.4px; font-size:9px; }
+}
 `;
 
 // ── Constants ──────────────────────────────────────────────────────────────
