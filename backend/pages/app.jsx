@@ -273,6 +273,10 @@ function AppContent() {
   const [syncErr,  setSyncErr]  = useState("");
   const [syncOk,   setSyncOk]   = useState("");
   const [adCreatives, setAdCreatives] = useState([]);
+  const [creativeRanking, setCreativeRanking] = useState([]);
+  const [creativeMinVolume, setCreativeMinVolume] = useState(2);
+  const [creativePeriod, setCreativePeriod] = useState(7);
+  const [creativeStatus, setCreativeStatus] = useState("ALL");
   const [creativesLoad, setCreativesLoad] = useState(false);
   const outRef  = useRef(null);
   const autoRef = useRef(null);
@@ -293,6 +297,35 @@ function AppContent() {
   const totalRevReal = totRev;  // revenue from FB data this week
   const salesPerDay  = totSales / 7;
   const spendPerDay  = totSpend / 7;
+
+  const creativeRows = adCreatives.filter((cr) => {
+    if (creativeStatus === "ALL") return true;
+    return cr.status === creativeStatus;
+  });
+
+  const sortByEfficiency = (a, b) => {
+    const ma = a.metrics?.[creativePeriod] || {};
+    const mb = b.metrics?.[creativePeriod] || {};
+    const cpaDiff = (ma.cpa ?? 999) - (mb.cpa ?? 999);
+    if (cpaDiff !== 0) return cpaDiff;
+    const ctrDiff = (mb.ctr ?? 0) - (ma.ctr ?? 0);
+    if (ctrDiff !== 0) return ctrDiff;
+    return (mb.conversions ?? 0) - (ma.conversions ?? 0);
+  };
+
+  const rankedCreatives = [...creativeRows]
+    .filter((cr) => (cr.metrics?.[creativePeriod]?.conversions || 0) >= creativeMinVolume)
+    .sort(sortByEfficiency);
+
+  const cheapToday = [...creativeRows]
+    .filter((cr) => (cr.metrics?.[1]?.conversions || 0) > 0)
+    .sort((a, b) => (a.metrics?.[1]?.cpa || 999) - (b.metrics?.[1]?.cpa || 999))
+    .slice(0, 3);
+
+  const cheap7d = [...creativeRows]
+    .filter((cr) => (cr.metrics?.[7]?.conversions || 0) >= creativeMinVolume)
+    .sort((a, b) => (a.metrics?.[7]?.cpa || 999) - (b.metrics?.[7]?.cpa || 999))
+    .slice(0, 3);
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
@@ -391,6 +424,8 @@ function AppContent() {
       const adsData = await adsRes.json();
       if (adsData.error) throw new Error("Criativos: " + adsData.error);
       setAdCreatives(adsData.data || []);
+      setCreativeRanking(adsData.ranking || []);
+      setCreativeMinVolume(adsData.minVolume || 2);
       addLog("ok", `✓ ${(adsData.data||[]).length} criativos carregados`);
       setSyncOk(`✓ Sincronizado! ${parsed.length} campanhas + ${(adsData.data||[]).length} criativos — ${new Date().toLocaleTimeString("pt-BR")}`);
     } catch(e) {
@@ -714,36 +749,63 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {tab==="criativos"&&(
           <div className="main">
 
-            {/* Gemini key */}
-            {/* Performance ranking */}
             <div className="card gb">
-              <div className="ctitle">📊 Performance Real por Criativo</div>
-              <div className="c4">
-                {[
-                  {num:"24",camps:activeCamps.filter(c=>c.name.match(/CRIATIVO 24/i))},
-                  {num:"26",camps:activeCamps.filter(c=>c.name.match(/CRIATIVO 26/i))},
-                  {num:"31",camps:activeCamps.filter(c=>c.name.match(/CRIATIVO 31/i))},
-                  {num:"42",camps:activeCamps.filter(c=>c.name.match(/CRIATIVO 42/i))},
-                ].map(g=>{
-                  const totV=g.camps.reduce((s,c)=>s+c.conversions,0);
-                  const totS=g.camps.reduce((s,c)=>s+c.spend,0);
-                  const avgC=totV>0?totS/totV:0;
-                  const avgT=g.camps.length>0?g.camps.reduce((s,c)=>s+c.ctr,0)/g.camps.length:0;
-                  return(
-                    <div key={g.num} className={`card ${avgC>0&&avgC<=18?"gnb":avgC>0&&avgC<=25?"gb":"rdb"}`} style={{padding:"14px"}}>
-                      <div style={{fontSize:22,fontWeight:800,color:"var(--gold)",marginBottom:4}}>#{g.num}</div>
-                      <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)",marginBottom:7}}>{g.camps.length} camp.</div>
-                      {totV>0?<>
-                        <div style={{fontSize:13,fontWeight:700,marginBottom:2}}>{totV} vendas</div>
-                        <div style={{fontFamily:"var(--mono)",fontSize:10,color:avgC<=18?"var(--green)":avgC<=25?"var(--gold)":"var(--red)"}}>CPA R${fNum(avgC)}</div>
-                        <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>CTR {fNum(avgT)}%</div>
-                      </>:<div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>Sem conv.</div>}
+              <div className="ctitle" style={{justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+                <span>📊 Ranking de Criativos por Eficiência</span>
+                <span style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>Volume mínimo: {creativeMinVolume} conversões</span>
+              </div>
+              <div className="brow" style={{marginBottom:12}}>
+                {[1,7,15,30,60].map((d)=>(
+                  <button key={d} className={creativePeriod===d?"btn":"btng"} style={{fontSize:11,padding:"7px 10px"}} onClick={()=>setCreativePeriod(d)}>
+                    {d}d
+                  </button>
+                ))}
+                <button className={creativeStatus==="ALL"?"btn":"btng"} style={{fontSize:11,padding:"7px 10px"}} onClick={()=>setCreativeStatus("ALL")}>Todos</button>
+                <button className={creativeStatus==="ACTIVE"?"btn":"btng"} style={{fontSize:11,padding:"7px 10px"}} onClick={()=>setCreativeStatus("ACTIVE")}>Ativos</button>
+                <button className={creativeStatus==="PAUSED"?"btn":"btng"} style={{fontSize:11,padding:"7px 10px"}} onClick={()=>setCreativeStatus("PAUSED")}>Pausados</button>
+              </div>
+              <div style={{display:"grid",gap:8,maxHeight:280,overflowY:"auto"}}>
+                {rankedCreatives.slice(0,8).map((cr,idx)=>{
+                  const m = cr.metrics?.[creativePeriod] || {};
+                  return (
+                    <div key={cr.adId} className="crow" style={{gridTemplateColumns:"1.1fr .55fr .55fr .45fr .65fr",alignItems:"center"}}>
+                      <div className="cname">#{idx+1} · {cr.creativeTag} · {cr.adName}</div>
+                      <div className="cs">{m.conversions || 0}v</div>
+                      <div className="cs" style={{color:(m.cpa||999)<=18?"var(--green)":(m.cpa||999)<=25?"var(--gold)":"var(--red)"}}>R${fNum(m.cpa || 0)}</div>
+                      <div className="cs" style={{color:"var(--txd)"}}>{fNum(m.ctr || 0)}%</div>
+                      <div className={`badge ${cr.status==="ACTIVE"?"sc":"pa"}`}>{cr.status==="ACTIVE"?"ATIVO":"PAUSADO"}</div>
                     </div>
                   );
                 })}
+                {rankedCreatives.length===0&&<div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>Sincronize os criativos para montar o ranking por CPA/CTR.</div>}
               </div>
-              <div style={{marginTop:10,fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)",background:"rgba(255,200,80,.04)",borderRadius:7,padding:"7px 10px"}}>
-                ⚠️ CPA acima = spend÷pixel. CPA real da operação (sem orderbump): <span style={{color:"var(--gold)",fontWeight:700}}>R${fNum(CPA_REAL)}</span>
+            </div>
+
+            <div className="c3">
+              <div className="card">
+                <div className="ctitle">💸 Top baratos do dia</div>
+                {cheapToday.map((cr)=>{
+                  const m=cr.metrics?.[1]||{};
+                  return <div key={cr.adId} style={{fontSize:11.5,marginBottom:7}}>{cr.creativeTag} · CPA R${fNum(m.cpa||0)} · CTR {fNum(m.ctr||0)}%</div>;
+                })}
+                {cheapToday.length===0&&<div style={{fontSize:11,color:"var(--txd)"}}>Sem volume no dia.</div>}
+              </div>
+              <div className="card">
+                <div className="ctitle">📆 Top baratos 7 dias</div>
+                {cheap7d.map((cr)=>{
+                  const m=cr.metrics?.[7]||{};
+                  return <div key={cr.adId} style={{fontSize:11.5,marginBottom:7}}>{cr.creativeTag} · CPA R${fNum(m.cpa||0)} · {m.conversions||0} vendas</div>;
+                })}
+                {cheap7d.length===0&&<div style={{fontSize:11,color:"var(--txd)"}}>Sem volume suficiente.</div>}
+              </div>
+              <div className="card">
+                <div className="ctitle">📈 Tendência</div>
+                {rankedCreatives.slice(0,4).map((cr)=> (
+                  <div key={cr.adId} style={{fontSize:11.5,marginBottom:7,color:cr.trend==="subindo"?"var(--green)":cr.trend==="caindo"?"var(--red)":"var(--txm)"}}>
+                    {cr.creativeTag}: {cr.trend}
+                  </div>
+                ))}
+                {rankedCreatives.length===0&&<div style={{fontSize:11,color:"var(--txd)"}}>Sem tendência calculada.</div>}
               </div>
             </div>
 
@@ -1068,7 +1130,16 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 </div>
                 <div style={{marginTop:12}}>
                   <button className="btn" onClick={()=>callAI(
-                    `Analise estes criativos que estão rodando na conta act_521962199812037:\n${adCreatives.map(c=>`- "${c.adName}" | Status: ${c.status} | Título: "${c.title}" | Texto: "${c.body?.slice(0,80)}"`).join("\n")}\n\nDados de performance das campanhas:\n${[...activeCamps].sort((a,b)=>a.cpa-b.cpa).slice(0,5).map(c=>`- ${c.name}: CPA R$${c.cpa.toFixed(2)}, CTR ${c.ctr}%, ${c.conversions} vendas`).join("\n")}\n\nDiga: quais criativos pausar agora, quais escalar, quais testar variações e por quê.`,
+                    `Analise estes criativos que estão rodando na conta act_521962199812037:
+${adCreatives.map(c=>`- "${c.adName}" | Tag: ${c.creativeTag || "S/TAG"} | Status: ${c.status} | Título: "${c.title}" | Texto: "${c.body?.slice(0,80)}"`).join("\n")}
+
+Ranking de eficiência (7d, foco em CPA):
+${rankedCreatives.slice(0,5).map((c,i)=>`#${i+1} ${c.creativeTag} | CPA R$${(c.metrics?.[7]?.cpa||0).toFixed(2)} | CTR ${(c.metrics?.[7]?.ctr||0).toFixed(2)}% | ${c.metrics?.[7]?.conversions||0} vendas | tendência ${c.trend}`).join("\n") || "Sem ranking suficiente"}
+
+Piores criativos por CPA:
+${[...creativeRows].sort((a,b)=>(b.metrics?.[7]?.cpa||0)-(a.metrics?.[7]?.cpa||0)).slice(0,3).map(c=>`- ${c.creativeTag} | CPA R$${(c.metrics?.[7]?.cpa||0).toFixed(2)} | CTR ${(c.metrics?.[7]?.ctr||0).toFixed(2)}%`).join("\n") || "Sem dados"}
+
+Diga: 1) criativo vencedor para escalar, 2) criativos perdedores para pausar, 3) variações específicas para cada um.`,
                     "sync_creat"
                   )} disabled={aiLoad}>
                     {aiLoad&&aiCtx==="sync_creat"?<><div className="spin"/>Analisando…</>:"🧠 Analisar Criativos com IA"}
