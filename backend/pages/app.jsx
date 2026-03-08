@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Head from "next/head";
+import { getWindowBaselines, getCampaignDecision } from "../utils/campaignDecision";
 
 const _css = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -83,6 +84,7 @@ body { background: #07070f; }
 .badge.sc { background:rgba(74,222,128,.12); color:var(--green); border:1px solid rgba(74,222,128,.2); }
 .badge.ho { background:rgba(255,200,80,.12); color:var(--gold); border:1px solid rgba(255,200,80,.2); }
 .badge.pa { background:rgba(248,113,113,.12); color:var(--red); border:1px solid rgba(248,113,113,.2); }
+.badge.rv { background:rgba(251,146,60,.12); color:var(--orange); border:1px solid rgba(251,146,60,.28); }
 .crc { background:var(--bg3); border:1px solid var(--bd); border-radius:11px; padding:15px; margin-bottom:9px; transition:all .2s; }
 .crc:hover { border-color:var(--bdg); }
 .crc.win { border-color:rgba(255,200,80,.32); background:rgba(255,200,80,.035); }
@@ -193,12 +195,7 @@ const CHECKLIST = {
 // ── Helpers ────────────────────────────────────────────────────────────────
 const fBRL  = v => `R$${Number(v).toLocaleString("pt-BR",{maximumFractionDigits:0})}`;
 const fNum  = v => Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
-// Motor calibrado para CPA real R$15,39 (sem orderbump)
-// ESCALAR  → CPA ≤ R$18  (margem saudável)
-// MANTER   → CPA R$18–25 (monitorar)
-// PAUSAR   → CPA > R$25  (risco de prejuízo)
-const cSt   = cpa => cpa <= 18 ? "sc" : cpa <= 25 ? "ho" : "pa";
-const stLbl = { sc:"ESCALAR", ho:"MANTER", pa:"PAUSAR" };
+const stLbl = { sc:"ESCALAR", ho:"MANTER", pa:"PAUSAR", rv:"REVISAR CRIATIVO" };
 
 // ── Parse FB JSON (manual import) ─────────────────────────────────────────
 function parseFBJson(raw) {
@@ -285,6 +282,12 @@ function AppContent() {
   const avgCpa       = totSales > 0 ? totSpend / totSales : 0;
   const avgCtr       = activeCamps.length > 0 ? activeCamps.reduce((s,c)=>s+c.ctr,0)/activeCamps.length : 0;
   const roas         = totSpend > 0 ? totRev / totSpend : 0;
+  const accountBaselines = getWindowBaselines(activeCamps);
+  const campaignDecisions = activeCamps.reduce((acc, campaign) => {
+    acc[campaign.id] = getCampaignDecision(campaign, accountBaselines);
+    return acc;
+  }, {});
+  const cSt = campaign => campaignDecisions[campaign.id]?.action || "ho";
   const winCamp      = [...activeCamps].filter(c=>c.conversions>0).sort((a,b)=>a.cpa-b.cpa)[0];
   const chkDone      = Object.values(checks).filter(Boolean).length;
   const chkTotal     = Object.values(CHECKLIST).flat().length;
@@ -467,8 +470,8 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
     const ts = new Date().toLocaleTimeString("pt-BR");
     setAutoLog(l=>[...l,`[${ts}] 🔄 Ciclo automático iniciado`]);
     const top  = [...activeCamps].filter(c=>c.conversions>0).sort((a,b)=>a.cpa-b.cpa)[0];
-    const pause= activeCamps.filter(c=>cSt(c.cpa)==="pa");
-    const scale= activeCamps.filter(c=>cSt(c.cpa)==="sc");
+    const pause= activeCamps.filter(c=>cSt(c)==="pa");
+    const scale= activeCamps.filter(c=>cSt(c)==="sc");
     if(scale.length) setAutoLog(l=>[...l,`[${ts}] ✅ ${scale.length} campanha(s) para ESCALAR`]);
     if(pause.length) setAutoLog(l=>[...l,`[${ts}] ⏸ ${pause.length} campanha(s) para PAUSAR`]);
     const p=`ANÁLISE AUTOMÁTICA — DADOS REAIS (7 dias)\nGasto total: R$${totSpend.toFixed(2)} | Vendas: ${totSales} | CPA médio: R$${avgCpa.toFixed(2)} | CTR: ${avgCtr.toFixed(2)}% | ROAS: ${roas.toFixed(2)}\nTop campanha: ${top?.name} (CPA R$${top?.cpa?.toFixed(2)}, ${top?.conversions} vendas)\n\nEm 5 linhas: diagnóstico · ação #1 urgente · criativo para hoje · produto para criar · projeção para R$100k.`;
@@ -639,11 +642,12 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {tab==="campanhas"&&(
           <div className="main">
             {/* Summary stats */}
-            <div className="c3">
+            <div className="c4">
               {[
-                {lbl:"🟢 Para Escalar",camps:activeCamps.filter(c=>cSt(c.cpa)==="sc"),col:"var(--green)",bg:"rgba(74,222,128,.06)",bd:"rgba(74,222,128,.2)"},
-                {lbl:"🟡 Manter",camps:activeCamps.filter(c=>cSt(c.cpa)==="ho"),col:"var(--gold)",bg:"rgba(255,200,80,.06)",bd:"rgba(255,200,80,.2)"},
-                {lbl:"🔴 Pausar",camps:activeCamps.filter(c=>cSt(c.cpa)==="pa"),col:"var(--red)",bg:"rgba(248,113,113,.06)",bd:"rgba(248,113,113,.2)"},
+                {lbl:"🟢 Para Escalar",camps:activeCamps.filter(c=>cSt(c)==="sc"),col:"var(--green)",bg:"rgba(74,222,128,.06)",bd:"rgba(74,222,128,.2)"},
+                {lbl:"🟡 Manter",camps:activeCamps.filter(c=>cSt(c)==="ho"),col:"var(--gold)",bg:"rgba(255,200,80,.06)",bd:"rgba(255,200,80,.2)"},
+                {lbl:"🟠 Revisar Criativo",camps:activeCamps.filter(c=>cSt(c)==="rv"),col:"var(--orange)",bg:"rgba(251,146,60,.06)",bd:"rgba(251,146,60,.2)"},
+                {lbl:"🔴 Pausar",camps:activeCamps.filter(c=>cSt(c)==="pa"),col:"var(--red)",bg:"rgba(248,113,113,.06)",bd:"rgba(248,113,113,.2)"},
               ].map(g=>(
                 <div key={g.lbl} style={{background:g.bg,border:`1px solid ${g.bd}`,borderRadius:"var(--r)",padding:"14px 16px"}}>
                   <div style={{fontSize:13,fontWeight:700,color:g.col,marginBottom:8}}>{g.lbl} ({g.camps.length})</div>
@@ -663,12 +667,17 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 <div className="ctitle">📣 Todas as Campanhas</div>
                 <div style={{maxHeight:440,overflowY:"auto"}}>
                   {[...activeCamps].sort((a,b)=>a.cpa-b.cpa).map(c=>(
-                    <div key={c.id} className="crow">
-                      <div className="cname">{c.name.replace("[MF] ","")}</div>
-                      <div className="cs">{c.conversions}v</div>
-                      <div className="cs" style={{color:c.cpa<=18?"var(--green)":c.cpa<=25?"var(--gold)":"var(--red)"}}>{fNum(c.cpa)}</div>
-                      <div className="cs" style={{color:"var(--txd)"}}>{fNum(c.ctr)}%</div>
-                      <div className={`badge ${cSt(c.cpa)}`}>{stLbl[cSt(c.cpa)]}</div>
+                    <div key={c.id} style={{padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,.05)"}}>
+                      <div className="crow" style={{borderBottom:"none",padding:"0 0 6px 0"}}>
+                        <div className="cname">{c.name.replace("[MF] ","")}</div>
+                        <div className="cs">{c.conversions}v</div>
+                        <div className="cs" style={{color:c.cpa<=18?"var(--green)":c.cpa<=25?"var(--gold)":"var(--red)"}}>{fNum(c.cpa)}</div>
+                        <div className="cs" style={{color:"var(--txd)"}}>{fNum(c.ctr)}%</div>
+                        <div className={`badge ${cSt(c)}`}>{stLbl[cSt(c)]}</div>
+                      </div>
+                      <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)",lineHeight:1.5,paddingRight:8}}>
+                        {campaignDecisions[c.id]?.stage?.toUpperCase()}: {campaignDecisions[c.id]?.reason}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -686,14 +695,10 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
               <div className="card">
                 <div className="ctitle">🎯 Motor de Decisão — CPA real R${fNum(CPA_REAL)}</div>
                 {[
-                  {c:"CPA ≤ R$18",       a:"ESCALAR +30% imediatamente",         col:"var(--green)"},
-                  {c:"CPA R$18–25",      a:"MANTER e monitorar CTR",             col:"var(--gold)"},
-                  {c:"CPA R$25–35",      a:"REVISAR criativo — perigo",          col:"var(--orange)"},
-                  {c:"CPA > R$35",       a:"PAUSAR — risco de prejuízo",         col:"var(--red)"},
-                  {c:"CTR < 1.5%",      a:"Trocar imagem urgente",               col:"var(--red)"},
-                  {c:"CTR > 4%",        a:"Escalar agressivo +50%",              col:"var(--green)"},
-                  {c:"ROAS > 3.0",      a:"Duplicar campanha / novo público",    col:"var(--green)"},
-                  {c:"10+ vendas/dia",  a:"Testar lookalike 1% do público",      col:"var(--green)"},
+                  {c:"Aprendizado",      a:"Baixo spend/conversões: manter até validar sinal estatístico.", col:"var(--gold)"},
+                  {c:"Estabilidade",     a:"Escalar somente com consistência de CPA + CTR + volume em 3/4 janelas.", col:"var(--green)"},
+                  {c:"Saturação",        a:"Piora em CPA/CTR: revisar criativo ou pausar se queimar verba sem conversão.", col:"var(--orange)"},
+                  {c:`Pausa defensiva`,   a:`Sem conversão acima do limite da conta por janela (7d: R$${fNum(accountBaselines[7]?.noConversionSpendLimit||0)}).`, col:"var(--red)"},
                 ].map((r,i)=>(
                   <div key={i} className="rr">
                     <div className="rc" style={{color:r.col}}>{r.c}</div>
@@ -704,6 +709,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 <div className="dv"/>
                 <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>
                   CPA real médio (sem orderbump): <span style={{color:"var(--gold)",fontWeight:700}}>R${fNum(CPA_REAL)}</span> · Meta: ≤ R$18
+                  <br/>Baseline 15d/30d/60d (CPA alvo): R${fNum(accountBaselines[15]?.targetCpa||0)} · R${fNum(accountBaselines[30]?.targetCpa||0)} · R${fNum(accountBaselines[60]?.targetCpa||0)}
                 </div>
               </div>
             </div>
@@ -1194,7 +1200,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 {icon:"🔥",title:"Escala Urgente",desc:"Como ir de "+salesPerDay.toFixed(0)+" para "+(salesPerDay*2).toFixed(0)+" vendas/dia",
                   fn:()=>callAI(`Vendas atuais: ${salesPerDay.toFixed(1)}/dia, gasto R$${(totSpend/7).toFixed(2)}/dia, CPA R$${avgCpa.toFixed(2)}. Quero dobrar para ${(salesPerDay*2).toFixed(0)} vendas/dia nos próximos 7 dias. Plano agressivo e específico.`,"ia")},
                 {icon:"✂️",title:"O que Pausar Agora",desc:"Análise de quais campanhas estão drenando verba",
-                  fn:()=>callAI(`Analise estas campanhas e diga EXATAMENTE quais pausar agora e quanto vou economizar:\n${activeCamps.filter(c=>cSt(c.cpa)==="pa").map(c=>`- ${c.name}: CPA R$${c.cpa.toFixed(2)}, gasto R$${c.spend.toFixed(2)}, ${c.conversions} vendas`).join("\n")||"Nenhuma campanha para pausar no momento."}`,"ia")},
+                  fn:()=>callAI(`Analise estas campanhas e diga EXATAMENTE quais pausar agora e quanto vou economizar:\n${activeCamps.filter(c=>cSt(c)==="pa").map(c=>`- ${c.name}: CPA R$${c.cpa.toFixed(2)}, gasto R$${c.spend.toFixed(2)}, ${c.conversions} vendas`).join("\n")||"Nenhuma campanha para pausar no momento."}`,"ia")},
                 {icon:"🧪",title:"Testes de Amanhã",desc:"3 experimentos concretos para rodar hoje",
                   fn:()=>callAI(`Com base nos dados reais (CPA R$${avgCpa.toFixed(2)}, CTR ${avgCtr.toFixed(2)}%, ROAS ${roas.toFixed(2)}): defina 3 testes específicos para rodar amanhã. Para cada: hipótese, como executar, orçamento, métrica de sucesso em 48h.`,"ia")},
               ].map(qa=>(
