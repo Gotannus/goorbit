@@ -298,11 +298,12 @@ function AppContent() {
     { ts:"agora", type:"info", msg:`Meta operacional: CPA real de referência R$${CPA_REAL.toFixed(2)}.` },
   ]);
   const [day,      setDay]      = useState(7);
-  const [fat,      setFat]      = useState(0);
+  const [manualRev,setManualRev]= useState(0);
   const [aiOut,    setAiOut]    = useState("");
   const [aiLoad,   setAiLoad]   = useState(false);
   const [aiCtx,    setAiCtx]    = useState("");
   const [customQ,  setCustomQ]  = useState("");
+  const [creativeRefNotes, setCreativeRefNotes] = useState("");
   const [autoMode, setAutoMode] = useState(false);
   const [autoLog,  setAutoLog]  = useState([]);
   const [checks,   setChecks]   = useState({});
@@ -340,7 +341,7 @@ function AppContent() {
   const winCamp      = [...activeCamps].filter(c=>c.conversions>0).sort((a,b)=>a.cpa-b.cpa)[0];
   const chkDone      = Object.values(checks).filter(Boolean).length;
   const chkTotal     = Object.values(CHECKLIST).flat().length;
-  const pct          = Math.min((fat / META_GOAL) * 100, 100);
+  const pct          = Math.min((manualRev / META_GOAL) * 100, 100);
 
   const totalRevReal = totRev;  // revenue from FB data this week
   const salesPerDay  = totSales / 7;
@@ -396,11 +397,6 @@ function AppContent() {
     finally { setAiLoad(false); }
   }, [aiProvider, aiApiKey, claudeApiKey, aiModel]);
 
-  // ── Auto analyze on first load ────────────────────────────────────────────
-  useEffect(()=>{
-    setFat(totRev);
-  },[totRev]);
-
   // ── Persistência local das credenciais/config de sync ─────────────────────
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -411,6 +407,8 @@ function AppContent() {
       const savedProvider = saved.aiProvider || "gemini";
       setAiProvider(savedProvider);
       if (saved.aiApiKey) setAiApiKey(saved.aiApiKey);
+      if (saved.manualRev !== undefined) setManualRev(Number(saved.manualRev)||0);
+      if (saved.creativeRefNotes) setCreativeRefNotes(saved.creativeRefNotes);
       if (saved.claudeApiKey) setClaudeApiKey(saved.claudeApiKey);
       setAiModel(normalizeSavedModel(savedProvider, saved.aiModel));
       if (saved.fbToken) setFbToken(saved.fbToken);
@@ -424,9 +422,9 @@ function AppContent() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset };
+    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset, manualRev, creativeRefNotes };
     localStorage.setItem("goorbit.sync.config.v1", JSON.stringify(payload));
-  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset]);
+  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset, manualRev, creativeRefNotes]);
 
   useEffect(() => {
     if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-haiku-4-5-20251001");
@@ -476,7 +474,6 @@ function AppContent() {
       setUsingReal(true); setFbConn(true);
       // ✅ Atualiza o dashboard com os novos dados
       const newTotRev = parsed.reduce((s,c)=>s+(c.revenue||0),0);
-      setFat(newTotRev);
       addLog("ok", `✓ ${parsed.length} campanhas sincronizadas`);
 
       const dailyRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}&date_preset=${encodeURIComponent(periodPreset)}&time_increment=1&limit=500`);
@@ -545,6 +542,13 @@ function AppContent() {
     setGeminiErr("");
 
     const top3 = [...activeCamps].filter(c=>c.conversions>0).sort((a,b)=>a.cpa-b.cpa).slice(0,3);
+    const topCreativeContext = topCreatives[0]
+      ? `CRIATIVO REFERÊNCIA (REAL):\n- Nome anúncio: ${topCreatives[0].adName}\n- Título: ${topCreatives[0].title}\n- Texto principal: ${topCreatives[0].body}\n- CPA: R$${fNum(topCreatives[0].cpa)} | CTR: ${fNum(topCreatives[0].ctr)}%\n`
+      : "CRIATIVO REFERÊNCIA: não disponível no momento.";
+    const userCreativeNotes = creativeRefNotes?.trim()
+      ? `\nDESCRIÇÃO DETALHADA DO TOP CRIATIVO (fornecida pela gestora):\n${creativeRefNotes}\n`
+      : "";
+
     const briefPrompt = `Você é especialista em criativos de imagem estática para Facebook Ads.
 
 CONTEXTO:
@@ -553,6 +557,9 @@ CONTEXTO:
 - CPA real: R$${CPA_REAL} (sem orderbump) | Meta CPA: ≤ R$18
 - Formato vencedor: IMAGENS ESTÁTICAS com texto emocional direto (criativos 24 e 26)
 - Top campanhas: ${top3.map(c=>`${c.name} (CPA R$${c.cpa.toFixed(2)}, CTR ${c.ctr}%)`).join(" | ")}
+- ${topCreativeContext}
+${userCreativeNotes}
+IMPORTANTE: Quando houver referência, preserve os elementos centrais do criativo vencedor (ex: expressão de choro, livro/capa visível, hook em texto sobreposto, linguagem emocional real).
 
 Gere 5 conceitos de IMAGEM ESTÁTICA para Facebook Ads feed (formato 4:5).
 
@@ -665,7 +672,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                 {[
                   {lbl:"Gasto Total",val:fBRL(totSpend),sub:"7 dias"},
                   {lbl:"Vendas",val:String(totSales),sub:`~${salesPerDay.toFixed(1)}/dia`},
-                  {lbl:"Faturamento",val:fBRL(totRev),sub:"Compra valor de conversão"},
+                  {lbl:"Faturamento (Manual)",val:fBRL(manualRev),sub:"Valor informado no dashboard"},
                   {lbl:"ROAS",val:fNum(roas),sub:`CPA R$${fNum(avgCpa)}`},
                 ].map(m=>(
                   <div key={m.lbl} style={{textAlign:"center",padding:"10px 0"}}>
@@ -682,18 +689,18 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:12}}>
                 <div>
               <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--gold)",opacity:.7,textTransform:"uppercase",letterSpacing:2,marginBottom:5}}>Meta acumulada (ajuste manual)</div>
-                  <span className="metafig">{fBRL(fat)}</span>
+                  <span className="metafig">{fBRL(manualRev)}</span>
                   <span className="metaof">/ R$100.000</span>
                 </div>
                 <div style={{display:"flex",flexDirection:"column",gap:5,alignItems:"flex-end"}}>
                   <div className="metapct">{pct.toFixed(1)}%</div>
-                  <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>Falta <span style={{color:"var(--gold)",fontWeight:600}}>{fBRL(Math.round((META_GOAL-fat)/Math.max(30-day,1)))}/dia</span></div>
+                  <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>Falta <span style={{color:"var(--gold)",fontWeight:600}}>{fBRL(Math.round((META_GOAL-manualRev)/Math.max(30-day,1)))}/dia</span></div>
                 </div>
               </div>
               <div className="ptrack"><div className="pfill" style={{width:`${pct}%`}}/></div>
               <div className="milestones">
                 {[[23333,"D7"],[50000,"D15"],[73333,"D22"],[100000,"D30"]].map(([v,d])=>(
-                  <div key={d} className={`ms ${fat>=v?"hit":""}`}>{d} {fBRL(v)}</div>
+                  <div key={d} className={`ms ${manualRev>=v?"hit":""}`}>{d} {fBRL(v)}</div>
                 ))}
               </div>
             </div>
@@ -742,11 +749,11 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                   </div>
                   <div className="fgrp">
                     <div className="flbl">Faturamento Total (R$)</div>
-                    <input className="finp" type="number" value={fat} onChange={e=>setFat(Number(e.target.value))}/>
+                    <input className="finp" type="number" value={manualRev} onChange={e=>setManualRev(Number(e.target.value)||0)}/>
                   </div>
                 </div>
                 <button className="btn" style={{width:"100%"}} onClick={()=>callAI(
-                  `DADOS REAIS DA CONTA act_521962199812037 — últimos 7 dias:\n\nGasto: R$${totSpend.toFixed(2)}\nVendas: ${totSales} (${salesPerDay.toFixed(1)}/dia)\nCPA médio: R$${avgCpa.toFixed(2)}\nCTR médio: ${avgCtr.toFixed(2)}%\nROAS: ${roas.toFixed(2)}\nFaturamento gerado: R$${totRev.toFixed(2)}\n\nTop campanha: ${winCamp?.name} (CPA R$${winCamp?.cpa?.toFixed(2)}, ${winCamp?.conversions} vendas)\n\nMeta: R$100.000 em 30 dias. Estamos no dia ${day}.\n\nDê: 1) diagnóstico honesto do desempenho atual, 2) as 3 ações mais urgentes agora, 3) projeção realista se mantiver o ritmo atual, 4) o que precisa mudar para bater R$100k.`,
+                  `DADOS REAIS DA CONTA act_521962199812037 — últimos 7 dias:\n\nGasto: R$${totSpend.toFixed(2)}\nVendas: ${totSales} (${salesPerDay.toFixed(1)}/dia)\nCPA médio: R$${avgCpa.toFixed(2)}\nCTR médio: ${avgCtr.toFixed(2)}%\nROAS: ${roas.toFixed(2)}\nFaturamento manual informado: R$${manualRev.toFixed(2)}\n\nTop campanha: ${winCamp?.name} (CPA R$${winCamp?.cpa?.toFixed(2)}, ${winCamp?.conversions} vendas)\n\nMeta: R$100.000 em 30 dias. Estamos no dia ${day}.\n\nDê: 1) diagnóstico honesto do desempenho atual, 2) as 3 ações mais urgentes agora, 3) projeção realista se mantiver o ritmo atual, 4) o que precisa mudar para bater R$100k.`,
                   "dash"
                 )} disabled={aiLoad}>
                   {aiLoad&&aiCtx==="dash"?<><div className="spin"/>Analisando...</>:"🧠 Analisar Dados Reais com IA"}
@@ -943,6 +950,11 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                       </div>
                     ))}
                   </div>
+                </div>
+
+                <div style={{marginBottom:10}}>
+                  <div className="flbl" style={{marginBottom:5}}>Descrição manual do top criativo (opcional)</div>
+                  <textarea className="jsontxt" style={{minHeight:88}} placeholder="Ex: Mulher chorando segurando o livro 'A Mulher Forte Está Cansada', hook em texto no topo e legenda em bloco no rodapé..." value={creativeRefNotes} onChange={e=>setCreativeRefNotes(e.target.value)} />
                 </div>
 
                 <button className="btn" style={{width:"100%",marginBottom:14}} onClick={genCreatives} disabled={genLoad}>
