@@ -235,6 +235,54 @@ function parseFBJson(raw) {
     .filter(c => c.impressions > 0 || c.spend > 0);
 }
 
+function collectTextParts(value, acc = []) {
+  if (!value && value !== 0) return acc;
+  if (typeof value === "string") {
+    const v = value.trim();
+    if (v) acc.push(v);
+    return acc;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectTextParts(item, acc));
+    return acc;
+  }
+  if (typeof value === "object") {
+    Object.values(value).forEach((item) => collectTextParts(item, acc));
+  }
+  return acc;
+}
+
+function normalizeCreative(creative) {
+  const parts = [];
+  collectTextParts(creative?.creativeName, parts);
+  collectTextParts(creative?.adName, parts);
+  collectTextParts(creative?.name, parts);
+  collectTextParts(creative?.title, parts);
+  collectTextParts(creative?.body, parts);
+  collectTextParts(creative?.link_url, parts);
+  collectTextParts(creative?.call_to_action_type, parts);
+  collectTextParts(creative?.object_story_spec, parts);
+  collectTextParts(creative?.asset_feed_spec, parts);
+  collectTextParts(creative?.visualFallbackText, parts);
+
+  const unique = [...new Set(parts.map((txt) => txt.replace(/\s+/g, " ").trim()).filter(Boolean))];
+  return {
+    ...creative,
+    creativeTextFull: unique.join("\n"),
+  };
+}
+
+function safeJsonParse(raw) {
+  try {
+    if (!raw) return null;
+    const clean = String(raw).replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+    const match = clean.match(/\{[\s\S]*\}/);
+    return JSON.parse(match ? match[0] : clean);
+  } catch {
+    return null;
+  }
+}
+
 // ── Main App ───────────────────────────────────────────────────────────────
 function AppContent() {
   const [tab,      setTab]      = useState("dashboard");
@@ -274,6 +322,8 @@ function AppContent() {
   const [syncOk,   setSyncOk]   = useState("");
   const [adCreatives, setAdCreatives] = useState([]);
   const [creativesLoad, setCreativesLoad] = useState(false);
+  const [creativeReadings, setCreativeReadings] = useState({});
+  const [readingLoad, setReadingLoad] = useState(false);
   const outRef  = useRef(null);
   const autoRef = useRef(null);
 
@@ -390,7 +440,8 @@ function AppContent() {
       const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
       const adsData = await adsRes.json();
       if (adsData.error) throw new Error("Criativos: " + adsData.error);
-      setAdCreatives(adsData.data || []);
+      setAdCreatives((adsData.data || []).map(normalizeCreative));
+      setCreativeReadings({});
       addLog("ok", `✓ ${(adsData.data||[]).length} criativos carregados`);
       setSyncOk(`✓ Sincronizado! ${parsed.length} campanhas + ${(adsData.data||[]).length} criativos — ${new Date().toLocaleTimeString("pt-BR")}`);
     } catch(e) {
@@ -399,6 +450,67 @@ function AppContent() {
     } finally {
       setSyncLoad(false);
       setCreativesLoad(false);
+    }
+  };
+
+  const enrichCreativeWithVisionFallback = async (creative) => {
+    const normalized = normalizeCreative(creative);
+    if ((normalized.creativeTextFull || "").length > 110) return normalized;
+
+    const visualUrls = [normalized.image_url, normalized.thumbnail_url, normalized.imageUrl].filter(Boolean);
+    if (!visualUrls.length && !normalized.video_id) return normalized;
+
+    const visualPrompt = `Você é um analista de criativos. Extraia todo texto visível (OCR) e descreva a cena do criativo.\nResponda APENAS em JSON: {"ocrText":"...","visualDescription":"..."}.`; 
+
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: aiApiKey,
+          prompt: `${visualPrompt}\n\nMeta: ${normalized.adName}\nID vídeo: ${normalized.video_id || "n/a"}`,
+          vision: { imageUrls: visualUrls.slice(0, 2) },
+        }),
+      });
+      const data = await res.json();
+      const parsed = safeJsonParse(data?.text || "") || {};
+      const fallback = [parsed.ocrText, parsed.visualDescription].filter(Boolean).join("\n");
+      return normalizeCreative({ ...normalized, visualFallbackText: fallback });
+    } catch {
+      return normalized;
+    }
+  };
+
+  const analyzeSingleCreative = async (creative) => {
+    const enriched = await enrichCreativeWithVisionFallback(creative);
+    const semanticPrompt = `Analise semanticamente o criativo abaixo e extraia os campos pedidos.\n\nTexto consolidado do criativo:\n${enriched.creativeTextFull || "Sem texto"}\n\nRetorne APENAS JSON com o formato:\n{\n  "promessa_principal": "",\n  "dor_atacada": "",\n  "mecanismo": "",\n  "oferta": "",\n  "cta": "",\n  "tom_emocional": "",\n  "objecoes_tratadas": [""],\n  "recomendacoes": [""]\n}`;
+
+    const res = await fetch("/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: aiApiKey, prompt: semanticPrompt, system: SYSTEM_PROMPT }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const parsed = safeJsonParse(data.text || "") || {};
+
+    setAdCreatives((prev) => prev.map((item) => (item.adId === creative.adId ? enriched : item)));
+    setCreativeReadings((prev) => ({ ...prev, [creative.adId]: parsed }));
+    return parsed;
+  };
+
+  const analyzeAllCreativeReadings = async () => {
+    if (!adCreatives.length) return;
+    setReadingLoad(true);
+    try {
+      for (const creative of adCreatives) {
+        await analyzeSingleCreative(creative);
+      }
+      addLog("ok", "✓ Leitura completa dos criativos concluída");
+    } catch (err) {
+      addLog("warn", "Leitura criativa com erro: " + err.message);
+    } finally {
+      setReadingLoad(false);
     }
   };
 
@@ -747,6 +859,41 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
               </div>
             </div>
 
+            {adCreatives.length>0&&(
+              <div className="card gb">
+                <div className="brow" style={{justifyContent:"space-between",marginBottom:10}}>
+                  <div className="ctitle" style={{marginBottom:0}}>📖 Leitura Completa de Criativos</div>
+                  <button className="btn" onClick={analyzeAllCreativeReadings} disabled={readingLoad || !aiApiKey}>
+                    {readingLoad?<><div className="spin"/>Analisando…</>:"🧠 Gerar Leitura Completa"}
+                  </button>
+                </div>
+                <div style={{display:"grid",gap:10}}>
+                  {adCreatives.map((cr) => {
+                    const read = creativeReadings[cr.adId] || {};
+                    return (
+                      <div key={`read_${cr.adId}`} style={{background:"rgba(255,255,255,.02)",border:"1px solid var(--bd)",borderRadius:10,padding:"12px 13px"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",gap:10,marginBottom:7}}>
+                          <div style={{fontSize:12,fontWeight:700}}>{cr.adName}</div>
+                          <button className="btnol" onClick={()=>analyzeSingleCreative(cr)} disabled={readingLoad || !aiApiKey} style={{padding:"6px 10px",fontSize:11}}>Atualizar</button>
+                        </div>
+                        <div style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)",marginBottom:8,whiteSpace:"pre-wrap"}}>{(cr.creativeTextFull || "").slice(0,240)}{(cr.creativeTextFull || "").length>240?"…":""}</div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11}}>
+                          <div><b>Promessa:</b> {read.promessa_principal || "—"}</div>
+                          <div><b>Dor:</b> {read.dor_atacada || "—"}</div>
+                          <div><b>Mecanismo:</b> {read.mecanismo || "—"}</div>
+                          <div><b>Oferta:</b> {read.oferta || "—"}</div>
+                          <div><b>CTA:</b> {read.cta || "—"}</div>
+                          <div><b>Tom emocional:</b> {read.tom_emocional || "—"}</div>
+                        </div>
+                        {!!(read.objecoes_tratadas || []).length && <div style={{marginTop:7,fontSize:11,color:"var(--txm)"}}><b>Objeções:</b> {(read.objecoes_tratadas || []).join(" · ")}</div>}
+                        {!!(read.recomendacoes || []).length && <div style={{marginTop:5,fontSize:11,color:"var(--gold)"}}><b>Recomendações:</b> {(read.recomendacoes || []).join(" • ")}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="c2">
               {/* LEFT: geração */}
               <div className="card">
@@ -1034,7 +1181,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             <div className="c3">
               {[
                 {icon:"📣",title:"Campanhas + Métricas",desc:"Busca spend, impressões, cliques, CTR e conversões dos últimos 7 dias. Atualiza o Dashboard e Campanhas automaticamente.",done:campaigns.length>0&&usingReal},
-                {icon:"🎨",title:"Criativos dos Anúncios",desc:"Carrega o título, texto, imagem e status de cada anúncio ativo ou pausado. Você vê exatamente qual criativo está rodando.",done:adCreatives.length>0},
+                {icon:"🎨",title:"Criativos dos Anúncios",desc:"Carrega título, corpo, CTA, link, object story, asset feed e mídia de cada anúncio ativo/pausado.",done:adCreatives.length>0},
                 {icon:"🧠",title:"Análise com IA",desc:"Após sync, peça uma análise instantânea: qual criativo pausar, qual escalar e o que testar amanhã com dados reais.",done:false},
               ].map(m=>(
                 <div key={m.title} className={`card ${m.done?"gnb":""}`}>
