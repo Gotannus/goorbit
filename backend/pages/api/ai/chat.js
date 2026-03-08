@@ -75,15 +75,43 @@ function normalizeModelList(requestedModel, requestedModels, defaults) {
   return [...new Set(merged)];
 }
 
-async function callGemini({ key, fullPrompt, modelCandidates }) {
+async function fetchImageAsInlinePart(url) {
+  const imageRes = await fetch(url);
+  if (!imageRes.ok) throw new Error(`Não foi possível baixar imagem (${imageRes.status})`);
+  const contentType = imageRes.headers.get("content-type") || "image/jpeg";
+  const buffer = Buffer.from(await imageRes.arrayBuffer());
+  return { data: buffer.toString("base64"), mimeType: contentType };
+}
+
+async function resolveVisionAssets(vision = {}) {
+  const imageUrls = Array.isArray(vision.imageUrls) ? vision.imageUrls.filter(Boolean).slice(0, 2) : [];
+  if (!imageUrls.length) return [];
+  const assets = [];
+  for (const url of imageUrls) {
+    try {
+      const inline = await fetchImageAsInlinePart(url);
+      assets.push({ url, ...inline });
+    } catch (err) {
+      console.warn(`[ai/chat][vision] falha ao carregar ${url}: ${err.message}`);
+    }
+  }
+  return assets;
+}
+
+async function callGemini({ key, fullPrompt, modelCandidates, visionAssets = [] }) {
   let lastError = "";
   for (const modelName of modelCandidates) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${key}`;
+    const parts = [{ text: fullPrompt }];
+    for (const image of visionAssets) {
+      parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
+    }
+
     const geminiRes = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: fullPrompt }] }],
+        contents: [{ parts }],
         generationConfig: { maxOutputTokens: 1500, temperature: 0.7 },
       }),
     });
@@ -99,8 +127,8 @@ async function callGemini({ key, fullPrompt, modelCandidates }) {
       if (isModelUnavailableError(geminiRes.status, err)) continue;
       continue;
     }
-    const parts = data.candidates?.[0]?.content?.parts ?? [];
-    const text = parts.map((part) => part.text || part.inlineData?.data || "").join("\n").trim();
+    const partsOut = data.candidates?.[0]?.content?.parts ?? [];
+    const text = partsOut.map((part) => part.text || part.inlineData?.data || "").join("\n").trim();
     if (!text) return { ok: false, status: 502, body: { error: "Gemini respondeu sem conteúdo de texto." } };
     console.info(`[ai/chat][gemini] sucesso com modelo ${modelName}`);
     return { ok: true, body: { text, provider: "gemini", model: modelName } };
@@ -108,13 +136,21 @@ async function callGemini({ key, fullPrompt, modelCandidates }) {
   return { ok: false, status: 400, body: { error: lastError || "Não foi possível gerar conteúdo no Gemini.", provider: "gemini", triedModels: modelCandidates } };
 }
 
-async function callClaude({ key, fullPrompt, system, modelCandidates }) {
+async function callClaude({ key, fullPrompt, system, modelCandidates, visionAssets = [] }) {
   let lastError = "";
   for (const modelName of modelCandidates) {
+    const content = [{ type: "text", text: fullPrompt }];
+    for (const image of visionAssets) {
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: image.mimeType, data: image.data },
+      });
+    }
+
     const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: modelName, system: system || undefined, max_tokens: 1500, temperature: 0.7, messages: [{ role: "user", content: fullPrompt }] }),
+      body: JSON.stringify({ model: modelName, system: system || undefined, max_tokens: 1500, temperature: 0.7, messages: [{ role: "user", content }] }),
     });
     const data = await claudeRes.json();
     if (!claudeRes.ok || data?.error) {
@@ -144,7 +180,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).end();
 
-  const { provider = "gemini", apiKey, prompt, system, model, models } = req.body ?? {};
+  const { provider = "gemini", apiKey, prompt, system, model, models, vision } = req.body ?? {};
   const selectedProvider = provider === "claude" ? "claude" : "gemini";
   const key = apiKey || (selectedProvider === "claude" ? process.env.CLAUDE_API_KEY : process.env.GEMINI_API_KEY);
 
@@ -156,9 +192,10 @@ export default async function handler(req, res) {
   try {
     const fullPrompt = selectedProvider === "claude" ? prompt : system ? `${system}\n\n${prompt}` : prompt;
     const modelCandidates = normalizeModelList(model, models, selectedProvider === "claude" ? DEFAULT_CLAUDE_MODELS : DEFAULT_GEMINI_MODELS);
+    const visionAssets = await resolveVisionAssets(vision);
     const response = selectedProvider === "claude"
-      ? await callClaude({ key, fullPrompt, system, modelCandidates })
-      : await callGemini({ key, fullPrompt, modelCandidates });
+      ? await callClaude({ key, fullPrompt, system, modelCandidates, visionAssets })
+      : await callGemini({ key, fullPrompt, modelCandidates, visionAssets });
 
     if (response.ok) return res.status(200).json(response.body);
     return res.status(response.status || 400).json(response.body);
