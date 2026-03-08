@@ -172,8 +172,8 @@ body { background: #07070f; font-family:var(--sans); -webkit-font-smoothing:anti
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const META_GOAL = 100000;
-const TICKET = 55;       // ticket do produto principal
-const CPA_REAL = 15.39;  // CPA médio REAL (sem orderbump) confirmado pelo gestor
+const TICKET = 14;       // ticket de fallback quando Meta não retorna valor de conversão
+const CPA_REAL = 14;  // referência operacional atual para corte
 // Obs: o FB reporta CPA calculado sobre spend/conversões pixel,
 // mas o CPA real da operação (sem orderbump) é R$15,39.
 // Motor de decisão usa limiares baseados neste CPA real.
@@ -223,12 +223,14 @@ const CHECKLIST = {
 // ── Helpers ────────────────────────────────────────────────────────────────
 const fBRL  = v => `R$${Number(v).toLocaleString("pt-BR",{maximumFractionDigits:0})}`;
 const fNum  = v => Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
-// Motor calibrado para CPA real R$15,39 (sem orderbump)
-// ESCALAR  → CPA ≤ R$18  (margem saudável)
-// MANTER   → CPA R$18–25 (monitorar)
-// PAUSAR   → CPA > R$25  (risco de prejuízo)
-const cSt   = cpa => cpa <= 18 ? "sc" : cpa <= 25 ? "ho" : "pa";
-const stLbl = { sc:"ESCALAR", ho:"MANTER", pa:"PAUSAR" };
+// Regras operacionais atuais (gestão manual):
+// DUPLICAR 3X apenas em alto desempenho
+// MANTER em faixa saudável
+// CORTAR acima de R$14 (não lucrativo)
+const SCALE_CPA = 11;
+const CUT_CPA = 14;
+const cSt   = cpa => cpa <= SCALE_CPA ? "sc" : cpa <= CUT_CPA ? "ho" : "pa";
+const stLbl = { sc:"DUPLICAR 3X", ho:"MANTER", pa:"CORTAR" };
 
 // ── Parse FB JSON (manual import) ─────────────────────────────────────────
 function parseFBJson(raw) {
@@ -322,6 +324,8 @@ function AppContent() {
   const [syncOk,   setSyncOk]   = useState("");
   const [adCreatives, setAdCreatives] = useState([]);
   const [creativesLoad, setCreativesLoad] = useState(false);
+  const [periodPreset, setPeriodPreset] = useState("last_7d");
+  const [campaignDaily, setCampaignDaily] = useState({});
   const outRef  = useRef(null);
   const autoRef = useRef(null);
 
@@ -345,6 +349,7 @@ function AppContent() {
     .filter((c) => c.imageUrl)
     .sort((a, b) => (a.cpa ?? 999) - (b.cpa ?? 999))
     .slice(0, 5);
+  const periodLabelMap = { last_7d:"7 dias", last_14d:"14 dias", last_30d:"30 dias", last_60d:"60 dias" };
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
@@ -413,14 +418,15 @@ function AppContent() {
       if (saved.fbAppSecret) setFbAppSecret(saved.fbAppSecret);
       if (saved.longToken) setLongToken(saved.longToken);
       if (typeof saved.syncAuto === "boolean") setSyncAuto(saved.syncAuto);
+      if (saved.periodPreset) setPeriodPreset(saved.periodPreset);
     } catch (_) {}
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto };
+    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset };
     localStorage.setItem("goorbit.sync.config.v1", JSON.stringify(payload));
-  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto]);
+  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset]);
 
   useEffect(() => {
     if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-haiku-4-5-20251001");
@@ -462,7 +468,7 @@ function AppContent() {
 
     try {
       // 1. Buscar insights das campanhas (últimos 7 dias)
-      const insRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}`);
+      const insRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}&date_preset=${encodeURIComponent(periodPreset)}`);
       const insData = await insRes.json();
       if (insData.error) throw new Error(insData.error);
       const parsed = parseFBJson(insData.data || []);
@@ -473,9 +479,32 @@ function AppContent() {
       setFat(newTotRev);
       addLog("ok", `✓ ${parsed.length} campanhas sincronizadas`);
 
+      const dailyRes = await fetch(`/api/meta/insights?token=${encodeURIComponent(fbToken)}&date_preset=${encodeURIComponent(periodPreset)}&time_increment=1&limit=500`);
+      const dailyData = await dailyRes.json();
+      if (!dailyData.error) {
+        const purchaseKeys = ["offsite_conversion.fb_pixel_purchase","purchase","omni_purchase","web_in_store_purchase"];
+        const grouped = {};
+        for (const row of dailyData.data || []) {
+          const conv = Number((row.actions || []).find(a => purchaseKeys.includes(a.action_type))?.value || 0);
+          const rev = Number((row.action_values || []).find(a => purchaseKeys.includes(a.action_type))?.value || 0);
+          const spend = Number(row.spend || 0);
+          const item = {
+            date: row.date_start,
+            spend,
+            conversions: conv,
+            revenue: rev,
+            cpa: conv > 0 ? spend / conv : 999,
+          };
+          if (!grouped[row.campaign_id]) grouped[row.campaign_id] = [];
+          grouped[row.campaign_id].push(item);
+        }
+        Object.keys(grouped).forEach((k) => grouped[k].sort((a,b)=>new Date(b.date)-new Date(a.date)));
+        setCampaignDaily(grouped);
+      }
+
       // 2. Buscar criativos dos anúncios ativos
       setCreativesLoad(true);
-      const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
+      const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}&date_preset=${encodeURIComponent(periodPreset)}`);
       const adsData = await adsRes.json();
       if (adsData.error) throw new Error("Criativos: " + adsData.error);
       const creatives = adsData.data || [];
@@ -496,7 +525,7 @@ function AppContent() {
     if (!fbToken.trim()) { setSyncErr("Cole o token de acesso para puxar criativos."); setTab("sync"); return; }
     setCreativesLoad(true); setSyncErr("");
     try {
-      const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}`);
+      const adsRes = await fetch(`/api/meta/creatives?token=${encodeURIComponent(fbToken)}&date_preset=${encodeURIComponent(periodPreset)}`);
       const adsData = await adsRes.json();
       if (adsData.error) throw new Error(adsData.error);
       const creatives = adsData.data || [];
@@ -744,19 +773,36 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
         {/* ═══ CAMPANHAS ═══ */}
         {tab==="campanhas"&&(
           <div className="main">
-            {/* Summary stats */}
+            <div className="card gb" style={{display:"flex",flexWrap:"wrap",gap:10,alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div className="ctitle" style={{marginBottom:6}}>📆 Janela de análise das campanhas</div>
+                <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>Escolha período e atualize para montar o relatório diário por campanha.</div>
+              </div>
+              <div className="brow" style={{gap:8}}>
+                <select className="finp" value={periodPreset} onChange={e=>setPeriodPreset(e.target.value)} style={{minWidth:140}}>
+                  <option value="last_7d">7 dias</option>
+                  <option value="last_14d">14 dias</option>
+                  <option value="last_30d">30 dias</option>
+                  <option value="last_60d">60 dias</option>
+                </select>
+                <button className="btnol" onClick={syncMetaAPI} disabled={syncLoad||!fbToken.trim()}>
+                  {syncLoad?"Atualizando…":"🔄 Atualizar campanhas"}
+                </button>
+              </div>
+            </div>
+
             <div className="c3">
               {[
-                {lbl:"🟢 Para Escalar",camps:activeCamps.filter(c=>cSt(c.cpa)==="sc"),col:"var(--green)",bg:"rgba(74,222,128,.06)",bd:"rgba(74,222,128,.2)"},
+                {lbl:"🟢 Alto desempenho",camps:activeCamps.filter(c=>cSt(c.cpa)==="sc"),col:"var(--green)",bg:"rgba(74,222,128,.06)",bd:"rgba(74,222,128,.2)"},
                 {lbl:"🟡 Manter",camps:activeCamps.filter(c=>cSt(c.cpa)==="ho"),col:"var(--gold)",bg:"rgba(255,200,80,.06)",bd:"rgba(255,200,80,.2)"},
-                {lbl:"🔴 Pausar",camps:activeCamps.filter(c=>cSt(c.cpa)==="pa"),col:"var(--red)",bg:"rgba(248,113,113,.06)",bd:"rgba(248,113,113,.2)"},
+                {lbl:"🔴 Cortar",camps:activeCamps.filter(c=>cSt(c.cpa)==="pa"),col:"var(--red)",bg:"rgba(248,113,113,.06)",bd:"rgba(248,113,113,.2)"},
               ].map(g=>(
                 <div key={g.lbl} style={{background:g.bg,border:`1px solid ${g.bd}`,borderRadius:"var(--r)",padding:"14px 16px"}}>
                   <div style={{fontSize:13,fontWeight:700,color:g.col,marginBottom:8}}>{g.lbl} ({g.camps.length})</div>
-                  {g.camps.map(c=>(
+                  {g.camps.slice(0,5).map(c=>(
                     <div key={c.id} style={{fontSize:11.5,color:"var(--txm)",marginBottom:4,lineHeight:1.4}}>
                       {c.name.replace("[MF] ","").slice(0,42)}
-                      <span style={{fontFamily:"var(--mono)",fontSize:10,color:g.col,marginLeft:6}}>R${fNum(c.cpa)}</span>
+                      <span style={{fontFamily:"var(--mono)",fontSize:10,color:g.col,marginLeft:6}}>CPA R${fNum(c.cpa)}</span>
                     </div>
                   ))}
                   {g.camps.length===0&&<div style={{fontSize:11,color:"var(--txd)"}}>Nenhuma</div>}
@@ -764,59 +810,53 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
               ))}
             </div>
 
-            <div className="c2">
-              <div className="card">
-                <div className="ctitle">📣 Todas as Campanhas</div>
-                <div style={{maxHeight:440,overflowY:"auto"}}>
-                  {[...activeCamps].sort((a,b)=>a.cpa-b.cpa).map(c=>(
-                    <div key={c.id} className="crow">
-                      <div className="cname">{c.name.replace("[MF] ","")}</div>
-                      <div className="cs">{c.conversions}v</div>
-                      <div className="cs" style={{color:c.cpa<=18?"var(--green)":c.cpa<=25?"var(--gold)":"var(--red)"}}>{fNum(c.cpa)}</div>
-                      <div className="cs" style={{color:"var(--txd)"}}>{fNum(c.ctr)}%</div>
-                      <div className={`badge ${cSt(c.cpa)}`}>{stLbl[cSt(c.cpa)]}</div>
+            <div className="card">
+              <div className="ctitle">📣 Relatório por campanha ({periodLabelMap[periodPreset]||periodPreset})</div>
+              <div style={{display:"grid",gap:10,maxHeight:620,overflowY:"auto"}}>
+                {[...activeCamps].sort((a,b)=>a.cpa-b.cpa).map(c=>{
+                  const daily=(campaignDaily[c.id]||[]).slice(0,5);
+                  return (
+                    <div key={c.id} style={{background:"rgba(255,255,255,.02)",border:"1px solid var(--bd)",borderRadius:10,padding:"12px 13px"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center",marginBottom:6}}>
+                        <div style={{fontSize:12,fontWeight:700}}>{c.name.replace("[MF] ","")}</div>
+                        <div className={`badge ${cSt(c.cpa)}`}>{stLbl[cSt(c.cpa)]}</div>
+                      </div>
+                      <div style={{display:"flex",gap:12,flexWrap:"wrap",fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)",marginBottom:8}}>
+                        <span>CPA R${fNum(c.cpa)}</span><span>CTR {fNum(c.ctr)}%</span><span>{c.conversions} vendas</span><span>Gasto {fBRL(c.spend)}</span>
+                      </div>
+                      {daily.length>0 ? (
+                        <div style={{display:"grid",gap:4}}>
+                          {daily.map((d)=> (
+                            <div key={`${c.id}_${d.date}`} style={{display:"grid",gridTemplateColumns:"88px 1fr 1fr 1fr",gap:8,fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>
+                              <span>{d.date}</span><span>Gasto {fBRL(d.spend)}</span><span>Conv {Math.round(d.conversions)}</span><span>CPA R${fNum(d.cpa)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : <div className="tipbox">Sem detalhamento diário para esta campanha. Clique em atualizar campanhas.</div>}
                     </div>
-                  ))}
-                </div>
-                <div style={{marginTop:12}}>
-                  <button className="btn" onClick={()=>callAI(
-                    `Analise cada campanha abaixo com dados REAIS e dê decisão (pausar/manter/escalar/duplicar):\n${[...activeCamps].sort((a,b)=>a.cpa-b.cpa).map(c=>`- ${c.name}: CPA R$${c.cpa.toFixed(2)}, ${c.conversions} vendas, CTR ${c.ctr}%, ROAS ${c.roas.toFixed(2)}, gasto R$${c.spend.toFixed(2)}`).join("\n")}\n\nTicket: R$55. Seja direto e específico para cada uma.`,
-                    "camps"
-                  )} disabled={aiLoad}>
-                    {aiLoad&&aiCtx==="camps"?<><div className="spin"/>...</>:"🧠 Analisar Todas com IA"}
-                  </button>
-                </div>
-                {aiOut&&aiCtx==="camps"&&<div className="aiout" ref={outRef}>{aiOut}{aiLoad&&<span className="cursor"/>}</div>}
+                  );
+                })}
               </div>
+            </div>
 
-              <div className="card">
-                <div className="ctitle">🎯 Motor de Decisão — CPA real R${fNum(CPA_REAL)}</div>
-                {[
-                  {c:"CPA ≤ R$18",       a:"ESCALAR +30% imediatamente",         col:"var(--green)"},
-                  {c:"CPA R$18–25",      a:"MANTER e monitorar CTR",             col:"var(--gold)"},
-                  {c:"CPA R$25–35",      a:"REVISAR criativo — perigo",          col:"var(--orange)"},
-                  {c:"CPA > R$35",       a:"PAUSAR — risco de prejuízo",         col:"var(--red)"},
-                  {c:"CTR < 1.5%",      a:"Trocar imagem urgente",               col:"var(--red)"},
-                  {c:"CTR > 4%",        a:"Escalar agressivo +50%",              col:"var(--green)"},
-                  {c:"ROAS > 3.0",      a:"Duplicar campanha / novo público",    col:"var(--green)"},
-                  {c:"10+ vendas/dia",  a:"Testar lookalike 1% do público",      col:"var(--green)"},
-                ].map((r,i)=>(
-                  <div key={i} className="rr">
-                    <div className="rc" style={{color:r.col}}>{r.c}</div>
-                    <div style={{color:"rgba(255,255,255,.15)",fontSize:14}}>→</div>
-                    <div className="ra">{r.a}</div>
-                  </div>
-                ))}
-                <div className="dv"/>
-                <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)"}}>
-                  CPA real médio (sem orderbump): <span style={{color:"var(--gold)",fontWeight:700}}>R${fNum(CPA_REAL)}</span> · Meta: ≤ R$18
+            <div className="card">
+              <div className="ctitle">🎯 Motor de decisão (seu método)</div>
+              {[
+                {c:`CPA ≤ R$${fNum(SCALE_CPA)}`,a:"ALTO desempenho → duplicar campanha em 3x (não escalar +30%)",col:"var(--green)"},
+                {c:`CPA R$${fNum(SCALE_CPA)}–R$${fNum(CUT_CPA)}`,a:"Manter e coletar mais dados",col:"var(--gold)"},
+                {c:`CPA > R$${fNum(CUT_CPA)}`,a:"Cortar campanha (não está lucrativa)",col:"var(--red)"},
+              ].map((r,i)=>(
+                <div key={i} className="rr">
+                  <div className="rc" style={{color:r.col}}>{r.c}</div>
+                  <div style={{color:"rgba(255,255,255,.15)",fontSize:14}}>→</div>
+                  <div className="ra">{r.a}</div>
                 </div>
-              </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* ═══ CRIATIVOS ═══ */}
+                {/* ═══ CRIATIVOS ═══ */}
         {tab==="criativos"&&(
           <div className="main">
 
