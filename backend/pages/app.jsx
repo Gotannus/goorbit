@@ -264,12 +264,14 @@ function parseFBJson(raw) {
         id: c.campaign_id ?? `imp_${i}`,
         name: (c.campaign_name ?? `Campanha ${i+1}`).replace(/\[Mulher Forte\]/gi,"[MF]"),
         spend, revenue,
+        status: c.campaign_effective_status || "ACTIVE",
         impressions: parseInt(c.impressions ?? 0),
         clicks: parseInt(c.clicks ?? 0),
         conversions: Math.round(conversions),
         ctr: parseFloat(ctr.toFixed(2)),
         cpa: conversions > 0 ? spend / conversions : 999,
         roas: spend > 0 && conversions > 0 ? revenue / spend : 0,
+        profit: revenue - spend,
       };
     })
     .filter(c => c.impressions > 0 || c.spend > 0);
@@ -327,6 +329,8 @@ function AppContent() {
   const [creativesLoad, setCreativesLoad] = useState(false);
   const [periodPreset, setPeriodPreset] = useState("last_7d");
   const [campaignDaily, setCampaignDaily] = useState({});
+  const [showPausedCampaigns, setShowPausedCampaigns] = useState(false);
+  const [campSortBy, setCampSortBy] = useState("spend_desc");
   const outRef  = useRef(null);
   const autoRef = useRef(null);
 
@@ -351,6 +355,12 @@ function AppContent() {
     .sort((a, b) => (a.cpa ?? 999) - (b.cpa ?? 999))
     .slice(0, 5);
   const periodLabelMap = { last_7d:"7 dias", last_14d:"14 dias", last_30d:"30 dias", last_60d:"60 dias" };
+  const campaignBase = showPausedCampaigns ? activeCamps : activeCamps.filter(c => (c.status || "ACTIVE") === "ACTIVE");
+  const visibleCampaigns = [...campaignBase].sort((a,b)=>{
+    if (campSortBy === "cpa_asc") return a.cpa - b.cpa;
+    if (campSortBy === "profit_desc") return (b.profit||0) - (a.profit||0);
+    return b.spend - a.spend;
+  });
 
   const addLog = (type, msg) => {
     const ts = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
@@ -417,14 +427,16 @@ function AppContent() {
       if (saved.longToken) setLongToken(saved.longToken);
       if (typeof saved.syncAuto === "boolean") setSyncAuto(saved.syncAuto);
       if (saved.periodPreset) setPeriodPreset(saved.periodPreset);
+      if (typeof saved.showPausedCampaigns === "boolean") setShowPausedCampaigns(saved.showPausedCampaigns);
+      if (saved.campSortBy) setCampSortBy(saved.campSortBy);
     } catch (_) {}
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset, manualRev, creativeRefNotes };
+    const payload = { aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset, manualRev, creativeRefNotes, showPausedCampaigns, campSortBy };
     localStorage.setItem("goorbit.sync.config.v1", JSON.stringify(payload));
-  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset, manualRev, creativeRefNotes]);
+  }, [aiProvider, aiApiKey, claudeApiKey, aiModel, fbToken, fbAppId, fbAppSecret, longToken, syncAuto, periodPreset, manualRev, creativeRefNotes, showPausedCampaigns, campSortBy]);
 
   useEffect(() => {
     if (aiProvider === "claude" && aiModel.startsWith("gemini")) setAiModel("claude-haiku-4-5-20251001");
@@ -491,6 +503,7 @@ function AppContent() {
             conversions: conv,
             revenue: rev,
             cpa: conv > 0 ? spend / conv : 999,
+            status: row.campaign_effective_status || "UNKNOWN",
           };
           if (!grouped[row.campaign_id]) grouped[row.campaign_id] = [];
           grouped[row.campaign_id].push(item);
@@ -792,6 +805,15 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                   <option value="last_30d">30 dias</option>
                   <option value="last_60d">60 dias</option>
                 </select>
+                <select className="finp" value={showPausedCampaigns?"all":"active"} onChange={e=>setShowPausedCampaigns(e.target.value==="all")} style={{minWidth:150}}>
+                  <option value="active">Somente ativas</option>
+                  <option value="all">Ativas + pausadas</option>
+                </select>
+                <select className="finp" value={campSortBy} onChange={e=>setCampSortBy(e.target.value)} style={{minWidth:160}}>
+                  <option value="spend_desc">Maior gasto</option>
+                  <option value="cpa_asc">Menor CPA</option>
+                  <option value="profit_desc">Maior lucro</option>
+                </select>
                 <button className="btnol" onClick={syncMetaAPI} disabled={syncLoad||!fbToken.trim()}>
                   {syncLoad?"Atualizando…":"🔄 Atualizar campanhas"}
                 </button>
@@ -800,9 +822,9 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
 
             <div className="c3">
               {[
-                {lbl:"🟢 Alto desempenho",camps:activeCamps.filter(c=>cSt(c.cpa)==="sc"),col:"var(--green)",bg:"rgba(74,222,128,.06)",bd:"rgba(74,222,128,.2)"},
-                {lbl:"🟡 Manter",camps:activeCamps.filter(c=>cSt(c.cpa)==="ho"),col:"var(--gold)",bg:"rgba(255,200,80,.06)",bd:"rgba(255,200,80,.2)"},
-                {lbl:"🔴 Cortar",camps:activeCamps.filter(c=>cSt(c.cpa)==="pa"),col:"var(--red)",bg:"rgba(248,113,113,.06)",bd:"rgba(248,113,113,.2)"},
+                {lbl:"🟢 Alto desempenho",camps:visibleCampaigns.filter(c=>cSt(c.cpa)==="sc"),col:"var(--green)",bg:"rgba(74,222,128,.06)",bd:"rgba(74,222,128,.2)"},
+                {lbl:"🟡 Manter",camps:visibleCampaigns.filter(c=>cSt(c.cpa)==="ho"),col:"var(--gold)",bg:"rgba(255,200,80,.06)",bd:"rgba(255,200,80,.2)"},
+                {lbl:"🔴 Cortar",camps:visibleCampaigns.filter(c=>cSt(c.cpa)==="pa"),col:"var(--red)",bg:"rgba(248,113,113,.06)",bd:"rgba(248,113,113,.2)"},
               ].map(g=>(
                 <div key={g.lbl} style={{background:g.bg,border:`1px solid ${g.bd}`,borderRadius:"var(--r)",padding:"14px 16px"}}>
                   <div style={{fontSize:13,fontWeight:700,color:g.col,marginBottom:8}}>{g.lbl} ({g.camps.length})</div>
@@ -820,7 +842,7 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
             <div className="card">
               <div className="ctitle">📣 Relatório por campanha ({periodLabelMap[periodPreset]||periodPreset})</div>
               <div style={{display:"grid",gap:10,maxHeight:620,overflowY:"auto"}}>
-                {[...activeCamps].sort((a,b)=>a.cpa-b.cpa).map(c=>{
+                {visibleCampaigns.map(c=>{
                   const daily=(campaignDaily[c.id]||[]).slice(0,5);
                   return (
                     <div key={c.id} style={{background:"rgba(255,255,255,.02)",border:"1px solid var(--bd)",borderRadius:10,padding:"12px 13px"}}>
@@ -828,14 +850,20 @@ Foco: parar o scroll. Sem cara de anúncio. Natural como post de amiga.`;
                         <div style={{fontSize:12,fontWeight:700}}>{c.name.replace("[MF] ","")}</div>
                         <div className={`badge ${cSt(c.cpa)}`}>{stLbl[cSt(c.cpa)]}</div>
                       </div>
-                      <div style={{display:"flex",gap:12,flexWrap:"wrap",fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)",marginBottom:8}}>
-                        <span>CPA R${fNum(c.cpa)}</span><span>CTR {fNum(c.ctr)}%</span><span>{c.conversions} vendas</span><span>Gasto {fBRL(c.spend)}</span>
+                      <div style={{display:"flex",gap:12,flexWrap:"wrap",fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",marginBottom:8}}>
+                        <span style={{color:c.cpa>CUT_CPA?"var(--red)":"var(--green)"}}>CPA R${fNum(c.cpa)}</span>
+                        <span>CTR {fNum(c.ctr)}%</span>
+                        <span>Vendas {c.conversions}</span>
+                        <span>Gasto {fBRL(c.spend)}</span>
+                        <span style={{color:"var(--gold)"}}>Fatur. {fBRL(c.revenue||0)}</span>
+                        <span style={{color:(c.profit||0)>=0?"var(--green)":"var(--red)"}}>Lucro {fBRL(c.profit||0)}</span>
+                        <span style={{color:"var(--txm)"}}>Status {(c.status||"-")}</span>
                       </div>
                       {daily.length>0 ? (
                         <div style={{display:"grid",gap:4}}>
                           {daily.map((d)=> (
-                            <div key={`${c.id}_${d.date}`} style={{display:"grid",gridTemplateColumns:"88px 1fr 1fr 1fr",gap:8,fontFamily:"var(--mono)",fontSize:10,color:"var(--txd)"}}>
-                              <span>{d.date}</span><span>Gasto {fBRL(d.spend)}</span><span>Conv {Math.round(d.conversions)}</span><span>CPA R${fNum(d.cpa)}</span>
+                            <div key={`${c.id}_${d.date}`} style={{display:"grid",gridTemplateColumns:"88px 1fr 1fr 1fr 1fr",gap:8,fontFamily:"var(--mono)",fontSize:11,color:"var(--txd)",background:"rgba(255,255,255,.015)",padding:"6px 8px",borderRadius:6}}>
+                              <span>{d.date}</span><span>Gasto {fBRL(d.spend)}</span><span>Conv {Math.round(d.conversions)}</span><span>CPA R${fNum(d.cpa)}</span><span>Fatur. {fBRL(d.revenue||0)}</span>
                             </div>
                           ))}
                         </div>
